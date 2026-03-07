@@ -2,7 +2,7 @@ from importlib.resources import files
 import os
 import json
 
-SRC_PATH = str(files('vulguard'))
+SRC_PATH = str(files('vulguard_lite'))
 
 def sort_by_predict(commit_list):
     # Sort the list of dictionaries based on the "predict" value in descending order
