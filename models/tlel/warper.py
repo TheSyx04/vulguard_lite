@@ -1,4 +1,4 @@
-from vulguard.models.BaseWraper import BaseWraper
+from vulguard_lite.models.BaseWraper import BaseWraper
 import pickle, os
 from .model.TLEL import TLEL
 import pandas as pd

@@ -1,10 +1,10 @@
-from vulguard.models.BaseWraper import BaseWraper
+from vulguard_lite.models.BaseWraper import BaseWraper
 import json, torch, os
 import torch.nn as nn
 from torchvision.ops.focal_loss import sigmoid_focal_loss
 from .model import DeepJITModel
 from .dataset import CustomDataset, get_data_loader
-from vulguard.utils.utils import open_jsonl
+from vulguard_lite.utils.utils import open_jsonl
 from tqdm import tqdm
 import pandas as pd
 
