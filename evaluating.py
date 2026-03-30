@@ -31,15 +31,16 @@ def evaluating(params):
     result_df.to_csv(f'{predict_score_path}/{model.model_name}.csv', index=False, columns=["commit_id", "label", "prediction", "probability"])
     print(f"Predict scores saved to: {predict_score_path}/{model.model_name}.csv")
     
-    size_df_path = f'{dg_cache_path}/dataset/{params.repo_name}/data/test_Kamei_features_{params.repo_name}.jsonl' if params.size_set is None else params.size_set
-    size_df = pd.read_json(size_df_path, orient="records", lines=True)
-    if not (
-        'commit_id' in size_df.columns and
-        'commit_id' in result_df.columns and
-        np.array_equal(size_df["commit_id"].values, result_df["commit_id"].values)
-    ):
-        size_df_path = None
+    # size_df_path = f'{dg_cache_path}/dataset/{params.repo_name}/data/test_Kamei_features_{params.repo_name}.jsonl' if params.size_set is None else params.size_set
+    # size_df = pd.read_json(size_df_path, orient="records", lines=True)
+    # if not (
+    #     'commit_id' in size_df.columns and
+    #     'commit_id' in result_df.columns and
+    #     np.array_equal(size_df["commit_id"].values, result_df["commit_id"].values)
+    # ):
+    #     size_df_path = None
     
-    metrics_df = get_metrics(result_df, model.model_name, size_df_path)    
+    # metrics_df = get_metrics(result_df, model.model_name, size_df_path)   
+    metrics_df = get_metrics(result_df, model.model_name, None)  
     metrics_df.to_csv(f'{result_path}/{model.model_name}.csv', index=True)
     print(f"Metrics saved to: {result_path}/{model.model_name}.csv")
