@@ -20,6 +20,17 @@ def str2bool(value):
         return False
     raise argparse.ArgumentTypeError("Expected a boolean value: True/False")
 
+
+def float_0_1(value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("Expected a float in range [0, 1]")
+
+    if parsed < 0.0 or parsed > 1.0:
+        raise argparse.ArgumentTypeError("Expected a float in range [0, 1]")
+    return parsed
+
 def seed_torch(seed=42):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -70,6 +81,15 @@ def main(args=None):
     evaluating_parser.add_argument("-size_set", type=str, default=None, help="File include number of added line and deleted line of each commit to get effort metrics.")
     evaluating_parser.add_argument("-hyperparameters",type=str,default=None, help="Path to hyperparameter")
     evaluating_parser.add_argument("-dictionary",type=str,default=None, help="Path to dictionary")
+    evaluating_parser.add_argument("-calibrated", type=str2bool, default=False, help="Enable threshold calibration from evaluation scores (True/False)")
+    evaluating_parser.add_argument("-budget", type=float_0_1, default=1, help="Marked function budget for calibration in [0, 1]")
+    evaluating_parser.add_argument(
+        "-calibration_range",
+        nargs=3,
+        default=None,
+        metavar=("START", "END", "STEPS"),
+        help="Threshold search range for calibration: START END STEPS (example: -calibration_range 0 1 10001)",
+    )
     
 
     parser = argparse.ArgumentParser(prog="VulGuard", description="A tool for mining, training, evaluating for Just-in-Time Vulnerability Prediction")

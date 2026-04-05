@@ -4,6 +4,73 @@ from .utils.utils import SRC_PATH, create_dg_cache
 from .utils.metrics import get_metrics
 import pandas as pd
 import numpy as np
+
+
+def _compute_ratios(result_df, threshold):
+    pred = (result_df["probability"] > threshold).astype(int)
+    y = result_df["label"].astype(int)
+
+    vuln = int((y == 1).sum())
+    marked = int((pred == 1).sum())
+    all_commit = len(y)
+    marked_vuln = int(((y == 1) & (pred == 1)).sum())
+
+    vuln_detection_ratio = marked_vuln / vuln if vuln > 0 else 0.0
+    marked_function_ratio = marked / all_commit if all_commit > 0 else 0.0
+    return vuln_detection_ratio, marked_function_ratio
+
+
+def _parse_calibration_range(calibration_range):
+    if calibration_range is None:
+        return 0.0, 1.0, 10001
+
+    start_raw, end_raw, steps_raw = calibration_range
+    try:
+        start = float(start_raw)
+        end = float(end_raw)
+        steps = int(steps_raw)
+    except (TypeError, ValueError):
+        raise ValueError("calibration_range must be: START END STEPS, where START/END are floats and STEPS is an integer")
+
+    if start < 0.0 or end > 1.0:
+        raise ValueError("calibration_range START and END must be within [0, 1]")
+    if start > end:
+        raise ValueError("calibration_range START must be <= END")
+    if steps < 2:
+        raise ValueError("calibration_range STEPS must be >= 2")
+
+    return start, end, steps
+
+
+def _select_calibrated_threshold(result_df, budget, calibration_range=None):
+    start, end, steps = _parse_calibration_range(calibration_range)
+    thresholds = np.round(np.linspace(start, end, steps), 4)
+    rows = []
+    for threshold in thresholds:
+        vuln_detection_ratio, marked_function_ratio = _compute_ratios(result_df, threshold)
+        rows.append(
+            {
+                "threshold": float(threshold),
+                "vuln_detection_ratio": vuln_detection_ratio,
+                "marked_function_ratio": marked_function_ratio,
+            }
+        )
+
+    calibration_df = pd.DataFrame(rows)
+    feasible = calibration_df[calibration_df["marked_function_ratio"] <= budget].copy()
+
+    if len(feasible) > 0:
+        best = feasible.sort_values(
+            ["vuln_detection_ratio", "marked_function_ratio", "threshold"],
+            ascending=[False, True, False],
+        ).iloc[0]
+    else:
+        best = calibration_df.sort_values(
+            ["marked_function_ratio", "vuln_detection_ratio", "threshold"],
+            ascending=[True, False, False],
+        ).iloc[0]
+
+    return float(best["threshold"]), best, calibration_df, start, end, steps
           
 def evaluating(params):
     dg_cache_path = create_dg_cache(params.dg_save_folder)
@@ -28,6 +95,27 @@ def evaluating(params):
         test_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/test_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs]) 
     
     result_df = model.inference(infer_df=test_df_path, threshold=threshold, params=params)
+
+    if getattr(params, "calibrated", False):
+        if "label" not in result_df.columns:
+            raise ValueError("Calibration requires labeled evaluation data with a 'label' column.")
+
+        selected_threshold, best_row, calibration_df, start, end, steps = _select_calibrated_threshold(
+            result_df,
+            params.budget,
+            getattr(params, "calibration_range", None),
+        )
+        threshold = selected_threshold
+        result_df["prediction"] = (result_df["probability"] > threshold).astype(float)
+
+        calibration_file = f'{predict_score_path}/{model.model_name}_threshold_calibration.csv'
+        calibration_df.to_csv(calibration_file, index=False)
+        print(f"Calibration points saved to: {calibration_file}")
+        print(f"Selected threshold: {best_row['threshold']}")
+        print(f"vuln_detection_ratio: {best_row['vuln_detection_ratio']}")
+        print(f"marked_function_ratio: {best_row['marked_function_ratio']}")
+        print(f"calibration_range: start={start}, end={end}, steps={steps}")
+
     result_df.to_csv(f'{predict_score_path}/{model.model_name}.csv', index=False, columns=["commit_id", "label", "prediction", "probability"])
     print(f"Predict scores saved to: {predict_score_path}/{model.model_name}.csv")
     
