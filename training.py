@@ -5,8 +5,9 @@ import os
 import random
 
 
-def _undersample_jsonl(input_path, output_path, seed=0):
-    random.seed(seed)
+def _undersample_jsonl(input_path, output_path, seed=None):
+    if seed is not None:
+        random.seed(seed)
     class_0, class_1 = [], []
 
     with open(input_path, "r", encoding="utf-8") as f:
@@ -46,6 +47,9 @@ def _apply_undersampling_if_needed(train_df_path, params, dg_cache_path):
     if not getattr(params, "sampling", False):
         return train_df_path
 
+    sampling_seed = getattr(params, "sampling_seed", None)
+    sampling_run_id = getattr(params, "sampling_run_id", None)
+
     sampled_paths = []
     for path in train_df_path.split(","):
         clean_path = path.strip()
@@ -56,8 +60,9 @@ def _apply_undersampling_if_needed(train_df_path, params, dg_cache_path):
         name, ext = os.path.splitext(base_name)
         sampled_dir = os.path.join(dg_cache_path, "dataset", params.repo_name, "sampled")
         os.makedirs(sampled_dir, exist_ok=True)
-        sampled_path = os.path.join(sampled_dir, f"{name}_undersampled{ext}")
-        sampled_paths.append(_undersample_jsonl(clean_path, sampled_path, seed=0))
+        run_suffix = f"_run_{sampling_run_id}" if sampling_run_id is not None else ""
+        sampled_path = os.path.join(sampled_dir, f"{name}_undersampled{run_suffix}{ext}")
+        sampled_paths.append(_undersample_jsonl(clean_path, sampled_path, seed=sampling_seed))
 
     if not sampled_paths:
         return train_df_path

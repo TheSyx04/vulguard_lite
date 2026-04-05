@@ -5,6 +5,7 @@ from datetime import datetime
 import numpy as np
 from .training import training
 from .evaluating import evaluating
+from .experiment import run_experiment
 from .models.init_model import models
 
 __version__ = "0.2.01"
@@ -29,6 +30,28 @@ def float_0_1(value):
 
     if parsed < 0.0 or parsed > 1.0:
         raise argparse.ArgumentTypeError("Expected a float in range [0, 1]")
+    return parsed
+
+
+def int_gte_1(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("Expected an integer >= 1")
+
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("Expected an integer >= 1")
+    return parsed
+
+
+def int_gte_0(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("Expected an integer >= 0")
+
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("Expected an integer >= 0")
     return parsed
 
 def seed_torch(seed=42):
@@ -83,7 +106,32 @@ def main(args=None):
     evaluating_parser.add_argument("-dictionary",type=str,default=None, help="Path to dictionary")
     evaluating_parser.add_argument("-calibrated", type=str2bool, default=False, help="Enable threshold calibration from evaluation scores (True/False)")
     evaluating_parser.add_argument("-budget", type=float_0_1, default=1, help="Marked function budget for calibration in [0, 1]")
+    evaluating_parser.add_argument("-runs", type=int_gte_1, default=1, help="Number of evaluation runs to execute")
     evaluating_parser.add_argument(
+        "-calibration_range",
+        nargs=3,
+        default=None,
+        metavar=("START", "END", "STEPS"),
+        help="Threshold search range for calibration: START END STEPS (example: -calibration_range 0 1 10001)",
+    )
+
+    experiment_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    experiment_parser.set_defaults(func=run_experiment)
+    experiment_parser.add_argument("-model", type=str, default=None, choices=models, help="List of models")
+    experiment_parser.add_argument("-device", type=str, default="cpu", help="Eg: cpu, cuda, cuda:1")
+    experiment_parser.add_argument("-epochs", type=int, default=1, help="")
+    experiment_parser.add_argument("-model_path", type=str, default=None, help="Path to pretrain models")
+    experiment_parser.add_argument("-train_set", type=str, default=None, help="")
+    experiment_parser.add_argument("-val_set", type=str, default=None, help="Validation set path used by training and calibration")
+    experiment_parser.add_argument("-test_set", type=str, default=None, help="Final test set path")
+    experiment_parser.add_argument("-hyperparameters", type=str, default=None, help="Path to hyperparameter")
+    experiment_parser.add_argument("-dictionary", type=str, default=None, help="Path to dictionary")
+    experiment_parser.add_argument("-sampling", type=str2bool, default=False, help="Enable random undersampling on the training set (True/False)")
+    experiment_parser.add_argument("-sampling_seed", type=int_gte_0, default=None, help="Optional base seed for undersampling; run index is added per run")
+    experiment_parser.add_argument("-threshold", type=float, default=0.5, help="Initial threshold before calibration")
+    experiment_parser.add_argument("-budget", type=float_0_1, default=1, help="Marked function budget for calibration in [0, 1]")
+    experiment_parser.add_argument("-runs", type=int_gte_1, default=1, help="Number of full train-validate-test experiment runs")
+    experiment_parser.add_argument(
         "-calibration_range",
         nargs=3,
         default=None,
@@ -96,9 +144,10 @@ def main(args=None):
     parser.add_argument("-version", action="version", version="%(prog)s " + __version__)
     parser.add_argument("-debug", action="store_true", help="Turn on system debug print")
     parser.add_argument("-log_to_file", action="store_true", help="Logging to file instead of stdout")
-    subparsers = parser.add_subparsers()
+    subparsers = parser.add_subparsers(dest='command')
     subparsers.add_parser('training', parents=[training_parser], help='Training Function')
     subparsers.add_parser('evaluating', parents=[evaluating_parser], help='Evaluating Function')
+    subparsers.add_parser('experiment', parents=[experiment_parser], help='Run full experiment loop: training -> validation calibration -> test')
 
     options = parser.parse_args(args)
 
