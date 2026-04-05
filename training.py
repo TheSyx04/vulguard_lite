@@ -1,5 +1,68 @@
 from .models.init_model import init_model
 from .utils.utils import SRC_PATH, create_dg_cache
+import json
+import os
+import random
+
+
+def _undersample_jsonl(input_path, output_path, seed=0):
+    random.seed(seed)
+    class_0, class_1 = [], []
+
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            label = obj.get("label")
+            if int(label) == 0:
+                class_0.append(obj)
+            else:
+                class_1.append(obj)
+
+    print(f"Before sampling ({os.path.basename(input_path)}):")
+    print(f"Label 0: {len(class_0)}")
+    print(f"Label 1: {len(class_1)}")
+
+    minority_size = min(len(class_0), len(class_1))
+    if minority_size == 0:
+        print("Skip sampling because one class is empty.")
+        return input_path
+
+    class_0_sampled = random.sample(class_0, minority_size)
+    class_1_sampled = random.sample(class_1, minority_size)
+    balanced_data = class_0_sampled + class_1_sampled
+    random.shuffle(balanced_data)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        for item in balanced_data:
+            f.write(json.dumps(item) + "\n")
+
+    print(f"After sampling ({os.path.basename(output_path)}):")
+    print(f"Total samples: {len(balanced_data)}")
+    print(f"Saved to: {output_path}")
+    return output_path
+
+
+def _apply_undersampling_if_needed(train_df_path, params, dg_cache_path):
+    if not getattr(params, "sampling", False):
+        return train_df_path
+
+    sampled_paths = []
+    for path in train_df_path.split(","):
+        clean_path = path.strip()
+        if not clean_path:
+            continue
+
+        base_name = os.path.basename(clean_path)
+        name, ext = os.path.splitext(base_name)
+        sampled_dir = os.path.join(dg_cache_path, "dataset", params.repo_name, "sampled")
+        os.makedirs(sampled_dir, exist_ok=True)
+        sampled_path = os.path.join(sampled_dir, f"{name}_undersampled{ext}")
+        sampled_paths.append(_undersample_jsonl(clean_path, sampled_path, seed=0))
+
+    if not sampled_paths:
+        return train_df_path
+
+    return ",".join(sampled_paths)
     
 def training(params):
     # create save folders
@@ -12,6 +75,8 @@ def training(params):
         train_df_path = params.train_set
     else:
         train_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/train_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
+
+    train_df_path = _apply_undersampling_if_needed(train_df_path, params, dg_cache_path)
     
     if params.val_set:
         val_df_path = params.val_set

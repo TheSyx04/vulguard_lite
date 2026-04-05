@@ -9,6 +9,17 @@ from .models.init_model import models
 
 __version__ = "0.2.01"
 
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = str(value).strip().lower()
+    if value in {"true", "1", "yes", "y"}:
+        return True
+    if value in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value: True/False")
+
 def seed_torch(seed=42):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -47,6 +58,7 @@ def main(args=None):
     training_parser.add_argument("-val_set", type=str, default=None, help="")
     training_parser.add_argument("-hyperparameters",type=str,default=None, help="Path to hyperparameter")
     training_parser.add_argument("-dictionary",type=str,default=None, help="Path to dictionary")
+    training_parser.add_argument("-sampling", type=str2bool, default=False, help="Enable random undersampling on the training set (True/False)")
 
     evaluating_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     evaluating_parser.set_defaults(func=evaluating)
