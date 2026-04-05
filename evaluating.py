@@ -1,4 +1,5 @@
 import os
+import json
 from .models.init_model import init_model
 from .utils.utils import SRC_PATH, create_dg_cache
 from .utils.metrics import get_metrics
@@ -110,7 +111,23 @@ def evaluating(params):
 
         calibration_file = f'{predict_score_path}/{model.model_name}_threshold_calibration.csv'
         calibration_df.to_csv(calibration_file, index=False)
+        selected_threshold_file = f'{predict_score_path}/{model.model_name}_selected_threshold.json'
+        selected_threshold_payload = {
+            "threshold": float(best_row["threshold"]),
+            "vuln_detection_ratio": float(best_row["vuln_detection_ratio"]),
+            "marked_function_ratio": float(best_row["marked_function_ratio"]),
+            "budget": float(params.budget),
+            "calibration_range": {
+                "start": float(start),
+                "end": float(end),
+                "steps": int(steps),
+            },
+        }
+        with open(selected_threshold_file, "w", encoding="utf-8") as f:
+            json.dump(selected_threshold_payload, f, indent=2)
+
         print(f"Calibration points saved to: {calibration_file}")
+        print(f"Selected threshold file saved to: {selected_threshold_file}")
         print(f"Selected threshold: {best_row['threshold']}")
         print(f"vuln_detection_ratio: {best_row['vuln_detection_ratio']}")
         print(f"marked_function_ratio: {best_row['marked_function_ratio']}")
