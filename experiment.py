@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+import io
+from contextlib import redirect_stdout
 from argparse import Namespace
 
 from .evaluating import evaluating
@@ -12,6 +14,17 @@ def _clone_params(params, overrides):
     data = vars(params).copy()
     data.update(overrides)
     return Namespace(**data)
+
+
+def _run_silently(func, params):
+    # Suppress verbose stdout from training/evaluating and keep experiment logs readable.
+    with redirect_stdout(io.StringIO()):
+        return func(params)
+
+
+def _safe_remove(path):
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def run_experiment(params):
@@ -47,7 +60,7 @@ def run_experiment(params):
             },
         )
         print("[1/3] Training...")
-        training(train_params)
+        _run_silently(training, train_params)
 
         print("[2/3] Validation evaluating with calibration...")
         val_eval_params = _clone_params(
@@ -58,7 +71,7 @@ def run_experiment(params):
                 "runs": 1,
             },
         )
-        evaluating(val_eval_params)
+        _run_silently(evaluating, val_eval_params)
 
         model_name = params.model
         selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
@@ -85,6 +98,16 @@ def run_experiment(params):
             shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_val_threshold_calibration.csv")
         shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_selected_threshold.json")
 
+        # Remove validation intermediate outputs from shared folders.
+        _safe_remove(f"{predict_score_path}/{model_name}.csv")
+        _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
+        _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
+        _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
+        _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
+        _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
+        _safe_remove(f"{result_path}/{model_name}.csv")
+        _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+
         print("[3/3] Final test evaluating with fixed threshold...")
         test_eval_params = _clone_params(
             params,
@@ -95,27 +118,19 @@ def run_experiment(params):
                 "runs": 1,
             },
         )
-        evaluating(test_eval_params)
+        _run_silently(evaluating, test_eval_params)
 
         test_score_file = f"{predict_score_path}/{model_name}.csv"
         test_metrics_file = f"{result_path}/{model_name}.csv"
         if os.path.exists(test_score_file):
             shutil.copy2(test_score_file, f"{run_dir}/{model_name}_test_scores.csv")
         if os.path.exists(test_metrics_file):
-            shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_test_metrics.csv")
+            shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_test_metric_run_{run_idx}.csv")
 
-        with open(f"{run_dir}/summary.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "run": run_idx,
-                    "selected_threshold": selected_threshold,
-                    "sampling_enabled": bool(getattr(params, "sampling", False)),
-                    "sampling_seed": run_sampling_seed,
-                    "budget": float(params.budget),
-                    "calibration_range": getattr(params, "calibration_range", None),
-                },
-                f,
-                indent=2,
-            )
+        # Remove test intermediate outputs from shared folders.
+        _safe_remove(f"{predict_score_path}/{model_name}.csv")
+        _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
+        _safe_remove(f"{result_path}/{model_name}.csv")
+        _safe_remove(f"{result_path}/{model_name}_run_1.csv")
 
         print(f"Run {run_idx} artifacts saved to: {run_dir}")
