@@ -28,6 +28,9 @@ def _safe_remove(path):
 
 
 def run_experiment(params):
+    if params.model == "deepjit" and params.dictionary is None:
+        raise ValueError("-dictionary is required for experiment mode when -model is deepjit.")
+
     dg_cache_path = create_dg_cache(params.dg_save_folder)
     base_save_path = f"{dg_cache_path}/save/{params.repo_name}"
     predict_score_path = f"{base_save_path}/predict_scores"
