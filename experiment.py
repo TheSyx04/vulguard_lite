@@ -5,6 +5,8 @@ import io
 from contextlib import redirect_stdout
 from argparse import Namespace
 
+import pandas as pd
+
 from .evaluating import evaluating
 from .training import training
 from .utils.utils import create_dg_cache
@@ -45,6 +47,7 @@ def run_experiment(params):
 
     base_sampling_seed = getattr(params, "sampling_seed", None)
     total_runs = params.runs
+    all_test_metrics = []
 
     for run_idx in range(1, total_runs + 1):
         print(f"================ Experiment Run {run_idx}/{total_runs} ================")
@@ -129,6 +132,10 @@ def run_experiment(params):
             shutil.copy2(test_score_file, f"{run_dir}/{model_name}_test_scores.csv")
         if os.path.exists(test_metrics_file):
             shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_test_metric_run_{run_idx}.csv")
+            test_metrics_df = pd.read_csv(test_metrics_file, index_col=0).reset_index()
+            test_metrics_df = test_metrics_df.rename(columns={"index": "model"})
+            test_metrics_df.insert(1, "run", run_idx)
+            all_test_metrics.append(test_metrics_df)
 
         # Remove test intermediate outputs from shared folders.
         _safe_remove(f"{predict_score_path}/{model_name}.csv")
@@ -137,3 +144,23 @@ def run_experiment(params):
         _safe_remove(f"{result_path}/{model_name}_run_1.csv")
 
         print(f"Run {run_idx} artifacts saved to: {run_dir}")
+
+    if all_test_metrics:
+        combined_test_metrics = pd.concat(all_test_metrics, ignore_index=True)
+        metric_columns = [
+            column
+            for column in combined_test_metrics.columns
+            if column not in {"model", "run"} and pd.api.types.is_numeric_dtype(combined_test_metrics[column])
+        ]
+
+        average_row = {"model": "average", "run": "average"}
+        for column in metric_columns:
+            average_row[column] = combined_test_metrics[column].mean()
+
+        combined_test_metrics = pd.concat(
+            [combined_test_metrics, pd.DataFrame([average_row])],
+            ignore_index=True,
+        )
+
+        output_name = "deepjit_test_all_run.csv" if params.model == "deepjit" else f"{params.model}_test_all_run.csv"
+        combined_test_metrics.to_csv(f"{experiment_root}/{output_name}", index=False)
