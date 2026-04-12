@@ -1,7 +1,7 @@
 from vulguard_lite.models.BaseWraper import BaseWraper
 import json, torch, os
 import torch.nn as nn
-from torchvision.ops.focal_loss import sigmoid_focal_loss
+
 from .model import DeepJITModel
 from .dataset import CustomDataset, get_data_loader
 from vulguard_lite.utils.utils import open_jsonl
@@ -49,14 +49,11 @@ class DeepJIT(BaseWraper):
         self.hyperparameters["class_num"] = 1
 
         
-        if model_path is None:
-            self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
-            
-        else:        
-            self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
+        self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
+
+        if model_path is not None:
             self.optimizer = torch.optim.Adam(self.get_parameters())
-            
-            checkpoint = torch.load(f"{model_path}/deepjit.pth")  # Load the last saved checkpoint
+            checkpoint = torch.load(f"{model_path}/deepjit.pth", weights_only=True)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.start_epoch = checkpoint['epoch'] + 1
@@ -135,15 +132,12 @@ class DeepJIT(BaseWraper):
                 predict = self.model(message, code)
 
                 loss = criterion(predict, label)
-                # loss = sigmoid_focal_loss(predict, label)
                 
                 loss.backward()
                 self.total_loss = loss.item()
                 self.optimizer.step()
 
             print(f'Training: Epoch {epoch} / {self.last_epoch} -- Total loss: {self.total_loss}')
-
-            print(self.total_loss < smallest_loss, self.total_loss, smallest_loss)
             if self.total_loss < smallest_loss:
                 smallest_loss = self.total_loss
                 print('Save a better model', smallest_loss)

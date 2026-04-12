@@ -1,8 +1,20 @@
 from importlib.resources import files
 import os
 import json
+import random
+import numpy as np
+import torch
 
 SRC_PATH = str(files('vulguard_lite'))
+
+def seed_torch(seed=42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 def sort_by_predict(commit_list):
     # Sort the list of dictionaries based on the "predict" value in descending order

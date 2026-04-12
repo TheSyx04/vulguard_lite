@@ -9,7 +9,7 @@ import pandas as pd
 
 from .evaluating import evaluating
 from .training import training
-from .utils.utils import create_dg_cache
+from .utils.utils import create_dg_cache, seed_torch
 
 
 def _clone_params(params, overrides):
@@ -50,19 +50,17 @@ def run_experiment(params):
     all_test_metrics = []
 
     for run_idx in range(1, total_runs + 1):
+        seed_torch()  # Reset seed at the start of every run so all runs are identical
         print(f"================ Experiment Run {run_idx}/{total_runs} ================")
         run_dir = f"{experiment_root}/run_{run_idx}"
         os.makedirs(run_dir, exist_ok=True)
-
-        # Keep the same sampling seed across runs for reproducible undersampling.
-        run_sampling_seed = base_sampling_seed
 
         train_params = _clone_params(
             params,
             {
                 "model_path": None,
                 "sampling_run_id": run_idx,
-                "sampling_seed": run_sampling_seed,
+                "sampling_seed": base_sampling_seed,
             },
         )
         print("[1/3] Training...")
