@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 
-def seed_everything(seed=42, deterministic=True):
+def seed_everything(seed=42, deterministic=False):
     if seed is None:
         return
 
