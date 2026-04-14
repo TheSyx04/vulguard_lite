@@ -1,8 +1,8 @@
-import argparse, os, random, sys, torch
+import argparse, os, sys
 from .utils.logger import logger
 from .utils.utils import SRC_PATH
+from .utils.reproducibility import seed_everything
 from datetime import datetime
-import numpy as np
 from .training import training
 from .evaluating import evaluating
 from .experiment import run_experiment
@@ -54,17 +54,6 @@ def int_gte_0(value):
         raise argparse.ArgumentTypeError("Expected an integer >= 0")
     return parsed
 
-def seed_torch(seed=42):
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-
-
-
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
@@ -80,6 +69,7 @@ def main(args=None):
     common_parser.add_argument("-repo_clone_url", type=str, default=None, help="URL to repository")
     common_parser.add_argument("-repo_clone_path", type=str, default=None, help="Path to clone repository")
     common_parser.add_argument("-repo_language", type=str, required=True, default=None, choices=available_languages, help="Main language of repo")
+    common_parser.add_argument("-seed", type=int_gte_0, default=42, help="Random seed for reproducible runs")
     
     training_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     training_parser.set_defaults(func=training)
@@ -127,7 +117,7 @@ def main(args=None):
     experiment_parser.add_argument("-hyperparameters", type=str, default=None, help="Path to hyperparameter")
     experiment_parser.add_argument("-dictionary", type=str, default=None, help="Path to dictionary")
     experiment_parser.add_argument("-sampling", type=str2bool, default=False, help="Enable random undersampling on the training set (True/False)")
-    experiment_parser.add_argument("-sampling_seed", type=int_gte_0, default=None, help="Optional base seed for undersampling; run index is added per run")
+    experiment_parser.add_argument("-sampling_seed", type=int_gte_0, default=None, help="Optional fixed seed for undersampling; defaults to -seed when omitted")
     experiment_parser.add_argument("-threshold", type=float, default=0.5, help="Initial threshold before calibration")
     experiment_parser.add_argument("-budget", type=float_0_1, default=1, help="Marked function budget for calibration in [0, 1]")
     experiment_parser.add_argument("-runs", type=int_gte_1, default=1, help="Number of full train-validate-test experiment runs")
@@ -172,9 +162,9 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'inferencing']:
-        print("Set seed!")
-        seed_torch()
+    if options.__dict__.get('command') in ['training', 'evaluating', 'inferencing', 'experiment']:
+        print(f"Set seed: {options.seed}")
+        seed_everything(options.seed)
         
     options.func(options)
 

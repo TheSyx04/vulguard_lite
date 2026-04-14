@@ -10,6 +10,7 @@ import pandas as pd
 from .evaluating import evaluating
 from .training import training
 from .utils.utils import create_dg_cache
+from .utils.reproducibility import seed_everything
 
 
 def _clone_params(params, overrides):
@@ -46,16 +47,19 @@ def run_experiment(params):
         raise ValueError("-test_set is required for experiment mode to run final test.")
 
     base_sampling_seed = getattr(params, "sampling_seed", None)
+    base_seed = getattr(params, "seed", 42)
     total_runs = params.runs
     all_test_metrics = []
 
     for run_idx in range(1, total_runs + 1):
         print(f"================ Experiment Run {run_idx}/{total_runs} ================")
+        # Reset random state per run so repeated runs are directly comparable.
+        seed_everything(base_seed)
         run_dir = f"{experiment_root}/run_{run_idx}"
         os.makedirs(run_dir, exist_ok=True)
 
         # Keep the same sampling seed across runs for reproducible undersampling.
-        run_sampling_seed = base_sampling_seed
+        run_sampling_seed = base_seed if base_sampling_seed is None else base_sampling_seed
 
         train_params = _clone_params(
             params,
