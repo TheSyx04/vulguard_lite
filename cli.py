@@ -1,7 +1,8 @@
-import argparse, os, sys
+import argparse, os, random, sys, torch
 from .utils.logger import logger
-from .utils.utils import SRC_PATH, seed_torch
+from .utils.utils import SRC_PATH
 from datetime import datetime
+import numpy as np
 from .training import training
 from .evaluating import evaluating
 from .experiment import run_experiment
@@ -52,6 +53,15 @@ def int_gte_0(value):
     if parsed < 0:
         raise argparse.ArgumentTypeError("Expected an integer >= 0")
     return parsed
+
+def seed_torch(seed=42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 
 
@@ -162,7 +172,7 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'inferencing', 'experiment']:
+    if options.__dict__.get('command') in ['training', 'evaluating', 'inferencing']:
         print("Set seed!")
         seed_torch()
         
