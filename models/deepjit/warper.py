@@ -119,12 +119,18 @@ class DeepJIT(BaseWraper):
         data_loader, labels = self.preprocess(train_df)
         assert labels is not None, "Ensure there is label column in training data"
         
-        smallest_loss = 1000000
-        early_stop_count = 5
+        best_epoch_loss = float("inf")
+        patience = 5
+        warmup_epochs = 5
+        min_delta = 1e-6
+        no_improve_epochs = 0
         
         self.last_epoch = self.hyperparameters["epoch"] if params.epochs is None else params.epochs
         for epoch in range(self.start_epoch, self.last_epoch + 1):
             print(f'Training: Epoch {epoch} / {self.last_epoch} -- Start')
+            self.model.train()
+            epoch_loss_sum = 0.0
+            epoch_batches = 0
             for batch in tqdm(data_loader):
                 # Extract data from DataLoader
                 code = batch["code"].to(self.device)
@@ -138,27 +144,35 @@ class DeepJIT(BaseWraper):
                 # loss = sigmoid_focal_loss(predict, label)
                 
                 loss.backward()
-                self.total_loss = loss.item()
                 self.optimizer.step()
+                epoch_loss_sum += float(loss.item())
+                epoch_batches += 1
 
-            print(f'Training: Epoch {epoch} / {self.last_epoch} -- Total loss: {self.total_loss}')
+            self.total_loss = epoch_loss_sum / max(1, epoch_batches)
+            improved = (best_epoch_loss - self.total_loss) > min_delta
 
-            print(self.total_loss < smallest_loss, self.total_loss, smallest_loss)
-            if self.total_loss < smallest_loss:
-                smallest_loss = self.total_loss
-                print('Save a better model', smallest_loss)
+            print(
+                f'Training: Epoch {epoch} / {self.last_epoch} -- '
+                f'Mean loss: {self.total_loss:.6f} | improved: {improved}'
+            )
+
+            if improved:
+                best_epoch_loss = self.total_loss
+                no_improve_epochs = 0
+                print('Save a better model', best_epoch_loss)
                 self.save(
                     save_path=save_path,
                     epoch=epoch,
                     optimizer=self.optimizer.state_dict(), 
-                    loss=loss.item()
+                    loss=self.total_loss
                 )
                 
             else:
-                print('No update of models', early_stop_count)
-                if epoch > 5:
-                    early_stop_count = early_stop_count - 1
-                if early_stop_count < 0:
+                if epoch > warmup_epochs:
+                    no_improve_epochs += 1
+                print(f'No improvement: {no_improve_epochs}/{patience}')
+                if no_improve_epochs >= patience:
+                    print(f'Early stopping at epoch {epoch}')
                     break
             
     
