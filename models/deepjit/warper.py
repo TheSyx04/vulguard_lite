@@ -120,6 +120,7 @@ class DeepJIT(BaseWraper):
         assert labels is not None, "Ensure there is label column in training data"
         
         best_epoch_loss = float("inf")
+        best_epoch = None
         patience = 5
         warmup_epochs = 5
         min_delta = 1e-6
@@ -149,17 +150,23 @@ class DeepJIT(BaseWraper):
                 epoch_batches += 1
 
             self.total_loss = epoch_loss_sum / max(1, epoch_batches)
-            improved = (best_epoch_loss - self.total_loss) > min_delta
+            previous_best_loss = best_epoch_loss
+            loss_gap = previous_best_loss - self.total_loss
+            improved = loss_gap > min_delta
 
             print(
                 f'Training: Epoch {epoch} / {self.last_epoch} -- '
-                f'Mean loss: {self.total_loss:.6f} | improved: {improved}'
+                f'Mean loss: {self.total_loss:.6f} | '
+                f'Best before epoch: {previous_best_loss:.6f} | '
+                f'Loss gap: {loss_gap:.6f} | min_delta: {min_delta:.6f} | '
+                f'improved: {improved}'
             )
 
             if improved:
                 best_epoch_loss = self.total_loss
+                best_epoch = epoch
                 no_improve_epochs = 0
-                print('Save a better model', best_epoch_loss)
+                print(f'Save a better model at epoch {epoch} with mean loss {best_epoch_loss:.6f}')
                 self.save(
                     save_path=save_path,
                     epoch=epoch,
@@ -170,9 +177,16 @@ class DeepJIT(BaseWraper):
             else:
                 if epoch > warmup_epochs:
                     no_improve_epochs += 1
-                print(f'No improvement: {no_improve_epochs}/{patience}')
+                print(
+                    f'No improvement after warmup: {no_improve_epochs}/{patience} | '
+                    f'Current mean loss: {self.total_loss:.6f} | '
+                    f'Best mean loss: {best_epoch_loss:.6f} (epoch {best_epoch})'
+                )
                 if no_improve_epochs >= patience:
-                    print(f'Early stopping at epoch {epoch}')
+                    print(
+                        f'Early stopping at epoch {epoch}. '
+                        f'Best epoch: {best_epoch}, best mean loss: {best_epoch_loss:.6f}'
+                    )
                     break
             
     
