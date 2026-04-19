@@ -1,8 +1,6 @@
 import json
 import os
 import shutil
-import io
-from contextlib import redirect_stdout
 from argparse import Namespace
 
 import pandas as pd
@@ -17,12 +15,6 @@ def _clone_params(params, overrides):
     data = vars(params).copy()
     data.update(overrides)
     return Namespace(**data)
-
-
-def _run_silently(func, params):
-    # Suppress verbose stdout from training/evaluating and keep experiment logs readable.
-    with redirect_stdout(io.StringIO()):
-        return func(params)
 
 
 def _safe_remove(path):
@@ -72,7 +64,7 @@ def run_experiment(params):
             },
         )
         print("[1/3] Training...")
-        _run_silently(training, train_params)
+        training(train_params)
 
         model_name = params.model
         if use_calibration:
@@ -85,7 +77,7 @@ def run_experiment(params):
                     "runs": 1,
                 },
             )
-            _run_silently(evaluating, val_eval_params)
+            evaluating(val_eval_params)
 
             selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
             if not os.path.exists(selected_threshold_file):
@@ -141,7 +133,7 @@ def run_experiment(params):
                 "runs": 1,
             },
         )
-        _run_silently(evaluating, test_eval_params)
+        evaluating(test_eval_params)
 
         test_score_file = f"{predict_score_path}/{model_name}.csv"
         test_metrics_file = f"{result_path}/{model_name}.csv"
