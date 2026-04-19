@@ -41,8 +41,10 @@ def run_experiment(params):
     experiment_root = f"{base_save_path}/experiments"
     os.makedirs(experiment_root, exist_ok=True)
 
-    if params.val_set is None:
-        raise ValueError("-val_set is required for experiment mode to calibrate threshold.")
+    use_calibration = getattr(params, "calibrated", True)
+
+    if use_calibration and params.val_set is None:
+        raise ValueError("-val_set is required for experiment mode when -calibrated is True.")
     if params.test_set is None:
         raise ValueError("-test_set is required for experiment mode to run final test.")
 
@@ -72,53 +74,64 @@ def run_experiment(params):
         print("[1/3] Training...")
         _run_silently(training, train_params)
 
-        print("[2/3] Validation evaluating with calibration...")
-        val_eval_params = _clone_params(
-            params,
-            {
-                "test_set": params.val_set,
-                "calibrated": True,
-                "runs": 1,
-            },
-        )
-        _run_silently(evaluating, val_eval_params)
-
         model_name = params.model
-        selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
-        if not os.path.exists(selected_threshold_file):
-            raise FileNotFoundError(
-                f"Selected threshold file not found: {selected_threshold_file}. "
-                "Ensure validation evaluating ran with calibration enabled."
+        if use_calibration:
+            print("[2/3] Validation evaluating with calibration...")
+            val_eval_params = _clone_params(
+                params,
+                {
+                    "test_set": params.val_set,
+                    "calibrated": True,
+                    "runs": 1,
+                },
             )
+            _run_silently(evaluating, val_eval_params)
 
-        with open(selected_threshold_file, "r", encoding="utf-8") as f:
-            threshold_payload = json.load(f)
-        selected_threshold = float(threshold_payload["threshold"])
-        print(f"Selected threshold for run {run_idx}: {selected_threshold}")
+            selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
+            if not os.path.exists(selected_threshold_file):
+                raise FileNotFoundError(
+                    f"Selected threshold file not found: {selected_threshold_file}. "
+                    "Ensure validation evaluating ran with calibration enabled."
+                )
 
-        val_score_file = f"{predict_score_path}/{model_name}.csv"
-        val_metrics_file = f"{result_path}/{model_name}.csv"
-        val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
+            with open(selected_threshold_file, "r", encoding="utf-8") as f:
+                threshold_payload = json.load(f)
+            selected_threshold = float(threshold_payload["threshold"])
+            print(f"Selected threshold for run {run_idx}: {selected_threshold}")
 
-        if os.path.exists(val_score_file):
-            shutil.copy2(val_score_file, f"{run_dir}/{model_name}_val_scores.csv")
-        if os.path.exists(val_metrics_file):
-            shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_val_metrics.csv")
-        if os.path.exists(val_calibration_file):
-            shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_val_threshold_calibration.csv")
-        shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_selected_threshold.json")
+            val_score_file = f"{predict_score_path}/{model_name}.csv"
+            val_metrics_file = f"{result_path}/{model_name}.csv"
+            val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
 
-        # Remove validation intermediate outputs from shared folders.
-        _safe_remove(f"{predict_score_path}/{model_name}.csv")
-        _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
-        _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
-        _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
-        _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
-        _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
-        _safe_remove(f"{result_path}/{model_name}.csv")
-        _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+            if os.path.exists(val_score_file):
+                shutil.copy2(val_score_file, f"{run_dir}/{model_name}_val_scores.csv")
+            if os.path.exists(val_metrics_file):
+                shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_val_metrics.csv")
+            if os.path.exists(val_calibration_file):
+                shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_val_threshold_calibration.csv")
+            shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_selected_threshold.json")
 
-        print("[3/3] Final test evaluating with fixed threshold...")
+            # Remove validation intermediate outputs from shared folders.
+            _safe_remove(f"{predict_score_path}/{model_name}.csv")
+            _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
+            _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
+            _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
+            _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
+            _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
+            _safe_remove(f"{result_path}/{model_name}.csv")
+            _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+            print("[3/3] Final test evaluating with fixed threshold...")
+        else:
+            selected_threshold = 0.5 if params.threshold is None else float(params.threshold)
+            print(f"[2/2] Skip calibration, use fixed threshold: {selected_threshold}")
+            fixed_threshold_payload = {
+                "threshold": selected_threshold,
+                "source": "fixed",
+                "run": int(run_idx),
+            }
+            with open(f"{run_dir}/{model_name}_selected_threshold.json", "w", encoding="utf-8") as f:
+                json.dump(fixed_threshold_payload, f, indent=2)
+
         test_eval_params = _clone_params(
             params,
             {
