@@ -73,6 +73,8 @@ def training(params):
     # create save folders
     dg_cache_path = create_dg_cache(params.dg_save_folder)
     save_path = f'{dg_cache_path}/save/{params.repo_name}'
+    checkpoint_dir = params.checkpoint_dir if getattr(params, "checkpoint_dir", None) else f"{save_path}/models/checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
     model = init_model(params.model, params.repo_language, params.device)
     
     default_inputs = model.default_input.split(",")
@@ -89,6 +91,18 @@ def training(params):
         val_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/val_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
         
     model_path = params.model_path
+    if getattr(params, "resume_from_checkpoint", False):
+        checkpoint_model_path = checkpoint_dir
+        checkpoint_file = os.path.join(checkpoint_model_path, f"{params.model}_checkpoint_last.pth")
+        if os.path.exists(checkpoint_file):
+            model_path = checkpoint_model_path
+            print(f"Resume enabled. Loading checkpoint: {checkpoint_file}")
+        else:
+            print(
+                f"Resume enabled but checkpoint not found at {checkpoint_file}. "
+                "Start training from scratch."
+            )
+
     dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'  if params.dictionary is None else params.dictionary 
     hyperparameters = f"{SRC_PATH}/models/{model.model_name}/hyperparameters.json" if params.hyperparameters is None else params.hyperparameters
     
@@ -97,7 +111,13 @@ def training(params):
     
     print(f"Train {model.model_name}")
     save_best_path = f"{save_path}/models/best_epoch"
-    model.train(train_df=train_df_path, val_df=val_df_path, params=params, save_path=save_best_path)
+    model.train(
+        train_df=train_df_path,
+        val_df=val_df_path,
+        params=params,
+        save_path=save_best_path,
+        checkpoint_path=checkpoint_dir,
+    )
     
     print(f"Save {model.model_name}")
     save_last_path = f"{save_path}/models/last_epoch"

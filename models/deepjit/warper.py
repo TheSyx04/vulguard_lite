@@ -55,12 +55,17 @@ class DeepJIT(BaseWraper):
         else:        
             self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
             self.optimizer = torch.optim.Adam(self.get_parameters())
-            
-            checkpoint = torch.load(f"{model_path}/deepjit.pth")  # Load the last saved checkpoint
+
+            checkpoint_file = f"{model_path}/{self.model_name}_checkpoint_last.pth"
+            if not os.path.exists(checkpoint_file):
+                checkpoint_file = f"{model_path}/deepjit.pth"
+
+            checkpoint = torch.load(checkpoint_file)  # Load checkpoint for resume/inference
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.start_epoch = checkpoint['epoch'] + 1
             self.total_loss = checkpoint['loss']
+            print(f"Loaded checkpoint from: {checkpoint_file}")
 
         # Set initialized to True
         self.initialized = True
@@ -113,7 +118,8 @@ class DeepJIT(BaseWraper):
     
     def train(self, train_df, **kwarg):
         params = kwarg.get("params")
-        save_path = kwarg.get("save_path")        
+        save_path = kwarg.get("save_path")
+        checkpoint_path = kwarg.get("checkpoint_path")
         self.optimizer = torch.optim.Adam(self.get_parameters(), lr=self.hyperparameters["learning_rate"]) if self.optimizer is None else self.optimizer
         criterion = nn.BCELoss()
         data_loader, labels = self.preprocess(train_df)
@@ -162,6 +168,22 @@ class DeepJIT(BaseWraper):
                 f'improved: {improved}'
             )
 
+            if checkpoint_path is not None:
+                self.save(
+                    save_path=checkpoint_path,
+                    epoch=epoch,
+                    optimizer=self.optimizer.state_dict(),
+                    loss=self.total_loss,
+                    file_name=f"{self.model_name}_checkpoint_epoch_{epoch}.pth",
+                )
+                self.save(
+                    save_path=checkpoint_path,
+                    epoch=epoch,
+                    optimizer=self.optimizer.state_dict(),
+                    loss=self.total_loss,
+                    file_name=f"{self.model_name}_checkpoint_last.pth",
+                )
+
             if improved:
                 best_epoch_loss = self.total_loss
                 best_epoch = epoch
@@ -190,10 +212,11 @@ class DeepJIT(BaseWraper):
                     break
             
     
-    def save(self, save_path, epoch=None, **kwarg):
+    def save(self, save_path, epoch=None, file_name=None, **kwarg):
         os.makedirs(save_path, exist_ok=True)
         
-        save_path = f"{save_path}/deepjit.pth"
+        output_file = "deepjit.pth" if file_name is None else file_name
+        save_path = f"{save_path}/{output_file}"
         torch.save({
             'epoch': self.last_epoch if epoch is None else epoch,
             'model_state_dict': self.model.state_dict(),

@@ -83,6 +83,8 @@ def main(args=None):
     training_parser.add_argument("-hyperparameters",type=str,default=None, help="Path to hyperparameter")
     training_parser.add_argument("-dictionary",type=str,default=None, help="Path to dictionary")
     training_parser.add_argument("-sampling", type=str2bool, default=False, help="Enable random undersampling on the training set (True/False)")
+    training_parser.add_argument("-resume_from_checkpoint", type=str2bool, default=False, help="Resume training from the latest saved checkpoint in -checkpoint_dir (True/False)")
+    training_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Directory to store epoch checkpoints (default: <dg_cache>/save/<repo_name>/models/checkpoints)")
 
     evaluating_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     evaluating_parser.set_defaults(func=evaluating)
@@ -118,6 +120,8 @@ def main(args=None):
     experiment_parser.add_argument("-dictionary", type=str, default=None, help="Path to dictionary")
     experiment_parser.add_argument("-sampling", type=str2bool, default=False, help="Enable random undersampling on the training set (True/False)")
     experiment_parser.add_argument("-sampling_seed", type=int_gte_0, default=None, help="Optional fixed seed for undersampling; defaults to -seed when omitted")
+    experiment_parser.add_argument("-resume_from_checkpoint", type=str2bool, default=False, help="Resume training from the latest saved checkpoint in -checkpoint_dir (True/False)")
+    experiment_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Directory to store epoch checkpoints (default: <dg_cache>/save/<repo_name>/models/checkpoints)")
     experiment_parser.add_argument("-calibrated", type=str2bool, default=True, help="Enable validation threshold calibration in experiment mode (True/False)")
     experiment_parser.add_argument("-threshold", type=float, default=0.5, help="Initial threshold before calibration")
     experiment_parser.add_argument("-budget", type=float_0_1, default=1, help="Marked function budget for calibration in [0, 1]")
