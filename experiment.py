@@ -41,6 +41,7 @@ def run_experiment(params):
         raise ValueError("-test_set is required for experiment mode to run final test.")
 
     base_sampling_seed = getattr(params, "sampling_seed", None)
+    base_checkpoint_dir = getattr(params, "checkpoint_dir", None)
     base_seed = getattr(params, "seed", 42)
     total_runs = params.runs
     all_test_metrics = []
@@ -51,6 +52,23 @@ def run_experiment(params):
         seed_everything(base_seed)
         run_dir = f"{experiment_root}/run_{run_idx}"
         os.makedirs(run_dir, exist_ok=True)
+        model_name = params.model
+        run_checkpoint_dir = (
+            f"{base_checkpoint_dir}/run_{run_idx}"
+            if base_checkpoint_dir
+            else f"{run_dir}/checkpoints"
+        )
+        os.makedirs(run_checkpoint_dir, exist_ok=True)
+
+        run_test_metric_file = f"{run_dir}/{model_name}_test_metric_run_{run_idx}.csv"
+        if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
+            print(f"Run {run_idx} already completed. Skip this run: {run_test_metric_file}")
+            test_metrics_df = pd.read_csv(run_test_metric_file, index_col=0).reset_index()
+            test_metrics_df = test_metrics_df.rename(columns={"index": "model"})
+            if "run" not in test_metrics_df.columns:
+                test_metrics_df.insert(1, "run", run_idx)
+            all_test_metrics.append(test_metrics_df)
+            continue
 
         # Keep the same sampling seed across runs for reproducible undersampling.
         run_sampling_seed = base_seed if base_sampling_seed is None else base_sampling_seed
@@ -61,12 +79,12 @@ def run_experiment(params):
                 "model_path": None,
                 "sampling_run_id": run_idx,
                 "sampling_seed": run_sampling_seed,
+                "checkpoint_dir": run_checkpoint_dir,
             },
         )
         print("[1/3] Training...")
         training(train_params)
 
-        model_name = params.model
         if use_calibration:
             print("[2/3] Validation evaluating with calibration...")
             val_eval_params = _clone_params(
