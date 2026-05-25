@@ -30,7 +30,10 @@ class SimCom(BaseWraper):
         final_predict['probability'] = (final_predict['probability_1'] + final_predict['probability_2']) / 2
         final_predict['prediction'] = (final_predict['probability'] > threshold).astype(float)
         if "label" in columns:
-            final_predict["label"] = sim_predict["label"]
+            if "label_1" in final_predict.columns:
+                final_predict["label"] = final_predict["label_1"]
+            elif "label_2" in final_predict.columns:
+                final_predict["label"] = final_predict["label_2"]
         return final_predict[columns]
 
     def inference(self, infer_df, threshold, **kwarg):

@@ -6,13 +6,26 @@ from sklearn.metrics import (
 )
 
 def eval_metrics(result_df, model, columns):
-    pred = result_df['prediction']
-    y_test = result_df['label']
-    y_proba = result_df["probability"]
+    result_df = result_df.copy()
+    result_df["label"] = pd.to_numeric(result_df["label"], errors="coerce")
+    result_df["prediction"] = pd.to_numeric(result_df["prediction"], errors="coerce")
+    result_df["probability"] = pd.to_numeric(result_df["probability"], errors="coerce")
+
+    valid_df = result_df.dropna(subset=["label", "prediction", "probability"])
+    if valid_df.empty:
+        raise ValueError("No valid labeled rows available for metric computation.")
+
+    dropped_rows = len(result_df) - len(valid_df)
+    if dropped_rows > 0:
+        print(f"Warning: dropped {dropped_rows} rows with missing label/prediction/probability before computing metrics.")
+
+    pred = valid_df['prediction']
+    y_test = valid_df['label']
+    y_proba = valid_df["probability"]
     
     # find AUC
     roc_auc = roc_auc_score(y_true=y_test, y_score=y_proba)
-    precisions, recalls, _ = precision_recall_curve(y_true=y_test, probas_pred=y_proba)
+    precisions, recalls, _ = precision_recall_curve(y_true=y_test, y_score=y_proba)
     pr_auc = auc(recalls, precisions)
 
     # find metrics
@@ -22,7 +35,7 @@ def eval_metrics(result_df, model, columns):
     rc = recall_score(y_true=y_test, y_pred=pred)
     mcc = matthews_corrcoef(y_true=y_test, y_pred=pred)
     
-    marked_vuln = len([commit for i, commit in enumerate(pred) if y_test[i] == 1 and commit == 1])
+    marked_vuln = len([commit for i, commit in enumerate(pred) if y_test.iloc[i] == 1 and commit == 1])
     vuln = len([commit for commit in y_test if commit == 1])
     marked = len([commit for commit in pred if commit == 1])
     all_commit = len(y_test)
@@ -101,9 +114,20 @@ def get_metrics(predict_df, model, features_file=None):
         columns = ["roc_auc", "pr_auc", "accuracy", "f1_score", "precision", "recall", "mcc", "Effort@20", "Recall@20", "Popt", "vuln_detection_ratio", "marked_function_ratio"]
     else:
         columns = ["roc_auc", "pr_auc", "accuracy", "f1_score", "precision", "recall", "mcc", "vuln_detection_ratio", "marked_function_ratio"]
-              
-    predict_df.columns = ["commit_id", "probability", "prediction", "label"]
+
+    predict_df = predict_df.copy()
+    required_columns = ["commit_id", "probability", "prediction", "label"]
+    missing_columns = [column for column in required_columns if column not in predict_df.columns]
+    if missing_columns:
+        raise ValueError(f"Prediction dataframe is missing required columns: {missing_columns}")
+
+    predict_df = predict_df.loc[:, required_columns]
     predict_df['prediction'] = predict_df['prediction'].apply(lambda x: float(bool(x)))
+    predict_df['probability'] = pd.to_numeric(predict_df['probability'], errors='coerce')
+    predict_df['label'] = pd.to_numeric(predict_df['label'], errors='coerce')
+    predict_df = predict_df.dropna(subset=['label', 'prediction', 'probability'])
+    if predict_df.empty:
+        raise ValueError("No labeled rows remain after dropping missing values.")
     
     if features_file is not None:
         features_df = pd.read_json(features_file, lines=True)
