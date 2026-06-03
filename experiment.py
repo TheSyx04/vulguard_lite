@@ -22,6 +22,37 @@ def _safe_remove(path):
         os.remove(path)
 
 
+def _normalize_budgets(budget_value):
+    if isinstance(budget_value, (list, tuple)):
+        budgets = list(budget_value)
+    else:
+        budgets = [budget_value]
+
+    return [float(budget) for budget in budgets]
+
+
+def _budget_tag(budget):
+    return f"budget_{budget:.4f}".replace(".", "p").rstrip("0").rstrip("p")
+
+
+def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload):
+    metrics_df = pd.read_csv(metrics_file, index_col=0).reset_index()
+    metrics_df = metrics_df.rename(columns={"index": "model"})
+    metrics_row = metrics_df.iloc[0].to_dict()
+    metrics_row.update(
+        {
+            "model": model_name,
+            "run": run_idx,
+            "budget": float(budget),
+            "threshold": float(threshold),
+        }
+    )
+    if threshold_payload is not None:
+        metrics_row["selected_threshold_source"] = threshold_payload.get("source")
+        metrics_row["selected_threshold_budget"] = float(threshold_payload.get("budget", budget))
+    return metrics_row
+
+
 def run_experiment(params):
     if params.model == "deepjit" and params.dictionary is None:
         raise ValueError("-dictionary is required for experiment mode when -model is deepjit.")
@@ -45,6 +76,7 @@ def run_experiment(params):
     base_seed = getattr(params, "seed", 42)
     total_runs = params.runs
     all_test_metrics = []
+    budgets = _normalize_budgets(getattr(params, "budget", [1]))
 
     for run_idx in range(1, total_runs + 1):
         print(f"================ Experiment Run {run_idx}/{total_runs} ================")
@@ -60,13 +92,10 @@ def run_experiment(params):
         )
         os.makedirs(run_checkpoint_dir, exist_ok=True)
 
-        run_test_metric_file = f"{run_dir}/{model_name}_test_metric_run_{run_idx}.csv"
+        run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"
         if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
             print(f"Run {run_idx} already completed. Skip this run: {run_test_metric_file}")
-            test_metrics_df = pd.read_csv(run_test_metric_file, index_col=0).reset_index()
-            test_metrics_df = test_metrics_df.rename(columns={"index": "model"})
-            if "run" not in test_metrics_df.columns:
-                test_metrics_df.insert(1, "run", run_idx)
+            test_metrics_df = pd.read_csv(run_test_metric_file)
             all_test_metrics.append(test_metrics_df)
             continue
 
@@ -85,109 +114,131 @@ def run_experiment(params):
         print("[1/3] Training...")
         training(train_params)
 
-        if use_calibration:
-            print("[2/3] Validation evaluating with calibration...")
-            val_eval_params = _clone_params(
+        run_rows = []
+        for budget_idx, budget in enumerate(budgets, start=1):
+            budget_label = _budget_tag(budget)
+            print(f"[2/3] Budget {budget_idx}/{len(budgets)}: calibration with budget={budget}")
+
+            if use_calibration:
+                val_eval_params = _clone_params(
+                    params,
+                    {
+                        "test_set": params.val_set,
+                        "calibrated": True,
+                        "budget": float(budget),
+                        "runs": 1,
+                    },
+                )
+                evaluating(val_eval_params)
+
+                selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
+                if not os.path.exists(selected_threshold_file):
+                    raise FileNotFoundError(
+                        f"Selected threshold file not found: {selected_threshold_file}. "
+                        "Ensure validation evaluating ran with calibration enabled."
+                    )
+
+                with open(selected_threshold_file, "r", encoding="utf-8") as f:
+                    threshold_payload = json.load(f)
+                selected_threshold = float(threshold_payload["threshold"])
+                print(f"Selected threshold for run {run_idx}, budget {budget}: {selected_threshold}")
+
+                val_score_file = f"{predict_score_path}/{model_name}.csv"
+                val_metrics_file = f"{result_path}/{model_name}.csv"
+                val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
+
+                if os.path.exists(val_score_file):
+                    shutil.copy2(val_score_file, f"{run_dir}/{model_name}_{budget_label}_val_scores.csv")
+                if os.path.exists(val_metrics_file):
+                    shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_{budget_label}_val_metrics.csv")
+                if os.path.exists(val_calibration_file):
+                    shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_{budget_label}_val_threshold_calibration.csv")
+                shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json")
+
+                _safe_remove(f"{predict_score_path}/{model_name}.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
+                _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
+                _safe_remove(f"{result_path}/{model_name}.csv")
+                _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+                print("[3/3] Final test evaluating with fixed threshold...")
+            else:
+                selected_threshold = 0.5 if params.threshold is None else float(params.threshold)
+                threshold_payload = {
+                    "threshold": selected_threshold,
+                    "source": "fixed",
+                    "run": int(run_idx),
+                    "budget": float(budget),
+                }
+                print(f"[2/2] Skip calibration, use fixed threshold: {selected_threshold}")
+                with open(f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json", "w", encoding="utf-8") as f:
+                    json.dump(threshold_payload, f, indent=2)
+
+            test_eval_params = _clone_params(
                 params,
                 {
-                    "test_set": params.val_set,
-                    "calibrated": True,
+                    "test_set": params.test_set,
+                    "calibrated": False,
+                    "budget": float(budget),
+                    "threshold": selected_threshold,
                     "runs": 1,
                 },
             )
-            evaluating(val_eval_params)
+            evaluating(test_eval_params)
 
-            selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
-            if not os.path.exists(selected_threshold_file):
-                raise FileNotFoundError(
-                    f"Selected threshold file not found: {selected_threshold_file}. "
-                    "Ensure validation evaluating ran with calibration enabled."
+            test_score_file = f"{predict_score_path}/{model_name}.csv"
+            test_metrics_file = f"{result_path}/{model_name}.csv"
+            if os.path.exists(test_score_file):
+                shutil.copy2(test_score_file, f"{run_dir}/{model_name}_{budget_label}_test_scores.csv")
+            if os.path.exists(test_metrics_file):
+                shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_{budget_label}_test_metrics.csv")
+                run_rows.append(
+                    _collect_metric_row(
+                        test_metrics_file,
+                        model_name,
+                        run_idx,
+                        budget,
+                        selected_threshold,
+                        threshold_payload if use_calibration else None,
+                    )
                 )
 
-            with open(selected_threshold_file, "r", encoding="utf-8") as f:
-                threshold_payload = json.load(f)
-            selected_threshold = float(threshold_payload["threshold"])
-            print(f"Selected threshold for run {run_idx}: {selected_threshold}")
-
-            val_score_file = f"{predict_score_path}/{model_name}.csv"
-            val_metrics_file = f"{result_path}/{model_name}.csv"
-            val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
-
-            if os.path.exists(val_score_file):
-                shutil.copy2(val_score_file, f"{run_dir}/{model_name}_val_scores.csv")
-            if os.path.exists(val_metrics_file):
-                shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_val_metrics.csv")
-            if os.path.exists(val_calibration_file):
-                shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_val_threshold_calibration.csv")
-            shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_selected_threshold.json")
-
-            # Remove validation intermediate outputs from shared folders.
             _safe_remove(f"{predict_score_path}/{model_name}.csv")
             _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
-            _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
-            _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
-            _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
-            _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
             _safe_remove(f"{result_path}/{model_name}.csv")
             _safe_remove(f"{result_path}/{model_name}_run_1.csv")
-            print("[3/3] Final test evaluating with fixed threshold...")
-        else:
-            selected_threshold = 0.5 if params.threshold is None else float(params.threshold)
-            print(f"[2/2] Skip calibration, use fixed threshold: {selected_threshold}")
-            fixed_threshold_payload = {
-                "threshold": selected_threshold,
-                "source": "fixed",
-                "run": int(run_idx),
-            }
-            with open(f"{run_dir}/{model_name}_selected_threshold.json", "w", encoding="utf-8") as f:
-                json.dump(fixed_threshold_payload, f, indent=2)
 
-        test_eval_params = _clone_params(
-            params,
-            {
-                "test_set": params.test_set,
-                "calibrated": False,
-                "threshold": selected_threshold,
-                "runs": 1,
-            },
-        )
-        evaluating(test_eval_params)
-
-        test_score_file = f"{predict_score_path}/{model_name}.csv"
-        test_metrics_file = f"{result_path}/{model_name}.csv"
-        if os.path.exists(test_score_file):
-            shutil.copy2(test_score_file, f"{run_dir}/{model_name}_test_scores.csv")
-        if os.path.exists(test_metrics_file):
-            shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_test_metric_run_{run_idx}.csv")
-            test_metrics_df = pd.read_csv(test_metrics_file, index_col=0).reset_index()
-            test_metrics_df = test_metrics_df.rename(columns={"index": "model"})
-            test_metrics_df.insert(1, "run", run_idx)
-            all_test_metrics.append(test_metrics_df)
-
-        # Remove test intermediate outputs from shared folders.
-        _safe_remove(f"{predict_score_path}/{model_name}.csv")
-        _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
-        _safe_remove(f"{result_path}/{model_name}.csv")
-        _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+        if run_rows:
+            run_summary_df = pd.DataFrame(run_rows)
+            run_summary_df.to_csv(run_test_metric_file, index=False)
+            all_test_metrics.append(run_summary_df)
 
         print(f"Run {run_idx} artifacts saved to: {run_dir}")
 
     if all_test_metrics:
         combined_test_metrics = pd.concat(all_test_metrics, ignore_index=True)
+        combined_test_metrics = combined_test_metrics.sort_values(["budget", "run"], kind="stable")
+
         metric_columns = [
             column
             for column in combined_test_metrics.columns
-            if column not in {"model", "run"} and pd.api.types.is_numeric_dtype(combined_test_metrics[column])
+            if column not in {"model", "run", "budget"} and pd.api.types.is_numeric_dtype(combined_test_metrics[column])
         ]
 
-        average_row = {"model": "average", "run": "average"}
-        for column in metric_columns:
-            average_row[column] = combined_test_metrics[column].mean()
+        summary_frames = []
+        for budget in sorted(combined_test_metrics["budget"].dropna().unique()):
+            budget_frame = combined_test_metrics[combined_test_metrics["budget"] == budget].copy()
+            average_row = {"model": "average", "run": "average", "budget": float(budget)}
+            for column in metric_columns:
+                average_row[column] = budget_frame[column].mean()
+            summary_frames.append(budget_frame)
+            summary_frames.append(pd.DataFrame([average_row]))
 
-        combined_test_metrics = pd.concat(
-            [combined_test_metrics, pd.DataFrame([average_row])],
-            ignore_index=True,
-        )
-
-        output_name = "deepjit_test_all_run.csv" if params.model == "deepjit" else f"{params.model}_test_all_run.csv"
-        combined_test_metrics.to_csv(f"{experiment_root}/{output_name}", index=False)
+        final_summary = pd.concat(summary_frames, ignore_index=True)
+        if len(budgets) == 1:
+            output_name = "deepjit_test_all_run.csv" if params.model == "deepjit" else f"{params.model}_test_all_run.csv"
+        else:
+            output_name = "deepjit_test_all_budget.csv" if params.model == "deepjit" else f"{params.model}_test_all_budget.csv"
+        final_summary.to_csv(f"{experiment_root}/{output_name}", index=False)

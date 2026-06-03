@@ -124,7 +124,13 @@ def main(args=None):
     experiment_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Directory to store epoch checkpoints (default: <dg_cache>/save/<repo_name>/models/checkpoints)")
     experiment_parser.add_argument("-calibrated", type=str2bool, default=True, help="Enable validation threshold calibration in experiment mode (True/False)")
     experiment_parser.add_argument("-threshold", type=float, default=0.5, help="Initial threshold before calibration")
-    experiment_parser.add_argument("-budget", type=float_0_1, default=1, help="Marked function budget for calibration in [0, 1]")
+    experiment_parser.add_argument(
+        "-budget",
+        nargs="+",
+        type=float_0_1,
+        default=[1],
+        help="Marked function budget(s) for calibration in [0, 1]",
+    )
     experiment_parser.add_argument("-runs", type=int_gte_1, default=1, help="Number of full train-validate-test experiment runs")
     experiment_parser.add_argument(
         "-calibration_range",
