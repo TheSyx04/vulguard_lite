@@ -7,6 +7,7 @@ import pandas as pd
 
 from .evaluating import evaluating
 from .training import training
+from .utils.hf_upload import upload_folder_to_hf_dataset
 from .utils.utils import create_dg_cache
 from .utils.reproducibility import seed_everything
 
@@ -35,6 +36,30 @@ def _budget_tag(budget):
     return f"budget_{budget:.4f}".replace(".", "p").rstrip("0").rstrip("p")
 
 
+def _split_tag(params):
+    hf_split_path = getattr(params, "hf_split_path", None)
+    if hf_split_path:
+        return hf_split_path.rstrip("/").split("/")[-1]
+
+    test_set = getattr(params, "test_set", None)
+    if test_set:
+        return "manual"
+
+    return "default"
+
+
+def _sampling_tag(params):
+    return "sampling" if getattr(params, "sampling", False) else "no_sampling"
+
+
+def _experiment_slug(params):
+    return f"{params.model}_{params.repo_name}_{_split_tag(params)}_{_sampling_tag(params)}"
+
+
+def _hf_output_path(params):
+    return f"output/{params.repo_name}/{params.model}/{_sampling_tag(params)}/{_experiment_slug(params)}"
+
+
 def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload):
     metrics_df = pd.read_csv(metrics_file, index_col=0).reset_index()
     metrics_df = metrics_df.rename(columns={"index": "model"})
@@ -58,9 +83,10 @@ def run_experiment(params):
 
     dg_cache_path = create_dg_cache(params.dg_save_folder)
     base_save_path = f"{dg_cache_path}/save/{params.repo_name}"
+    experiment_slug = _experiment_slug(params)
     predict_score_path = f"{base_save_path}/predict_scores"
     result_path = f"{base_save_path}/results"
-    experiment_root = f"{base_save_path}/experiments"
+    experiment_root = f"{base_save_path}/experiments/{experiment_slug}"
     os.makedirs(experiment_root, exist_ok=True)
 
     use_calibration = getattr(params, "calibrated", True)
@@ -237,7 +263,22 @@ def run_experiment(params):
 
         final_summary = pd.concat(summary_frames, ignore_index=True)
         if len(budgets) == 1:
-            output_name = "deepjit_test_all_run.csv" if params.model == "deepjit" else f"{params.model}_test_all_run.csv"
+            output_name = f"{experiment_slug}_test_all_run.csv"
         else:
-            output_name = "deepjit_test_all_budget.csv" if params.model == "deepjit" else f"{params.model}_test_all_budget.csv"
-        final_summary.to_csv(f"{experiment_root}/{output_name}", index=False)
+            output_name = f"{experiment_slug}_test_all_budget.csv"
+        final_summary_path = f"{experiment_root}/{output_name}"
+        final_summary.to_csv(final_summary_path, index=False)
+
+        if getattr(params, "hf_upload_result", False):
+            output_repo_id = getattr(params, "hf_output_repo_id", None) or hf_repo_id
+            if not output_repo_id:
+                raise ValueError("-hf_output_repo_id or -hf_repo_id is required when -hf_upload_result is True.")
+
+            remote_path = _hf_output_path(params)
+            print(f"Uploading experiment results to HF dataset repo: {output_repo_id}/{remote_path}")
+            upload_folder_to_hf_dataset(
+                local_folder=experiment_root,
+                repo_id=output_repo_id,
+                path_in_repo=remote_path,
+                commit_message=f"Upload experiment results for {experiment_slug}",
+            )

@@ -6,3 +6,4 @@ tqdm>=4.64
 torch>=1.13
 torchvision>=0.14
 icecream
+huggingface_hub>=0.23
