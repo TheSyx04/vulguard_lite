@@ -47,9 +47,7 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
             "threshold": float(threshold),
         }
     )
-    if threshold_payload is not None:
-        metrics_row["selected_threshold_source"] = threshold_payload.get("source")
-        metrics_row["selected_threshold_budget"] = float(threshold_payload.get("budget", budget))
+
     return metrics_row
 
 
