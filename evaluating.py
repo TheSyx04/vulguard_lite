@@ -3,6 +3,7 @@ import json
 import shutil
 from .models.init_model import init_model
 from .utils.utils import SRC_PATH, create_dg_cache
+from .utils.hf_dataset import prepare_hf_dataset_paths
 from .utils.metrics import get_metrics
 import pandas as pd
 import numpy as np
@@ -89,7 +90,16 @@ def evaluating(params):
 
         # Init model per run so each run starts fresh.
         model = init_model(params.model, params.repo_language, params.device)
-        dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'  if params.dictionary is None else params.dictionary
+        hf_paths = prepare_hf_dataset_paths(
+            dg_cache_path,
+            params.repo_name,
+            model.model_name,
+            getattr(params, "hf_repo_id", None),
+            revision=getattr(params, "hf_revision", "main"),
+            split_path=getattr(params, "hf_split_path", None),
+        )
+
+        dictionary = params.dictionary if params.dictionary is not None else hf_paths.get("dictionary", f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl')
         hyperparameters = f"{SRC_PATH}/models/{model.model_name}/hyperparameters.json" if params.hyperparameters is None else params.hyperparameters
         model_path = f'{dg_cache_path}/save/{params.repo_name}/models/best_epoch' if params.model_path is None else params.model_path
         print(f"Init model: {model.model_name}")
@@ -98,6 +108,8 @@ def evaluating(params):
         default_inputs = model.default_input.split(",")
         if params.test_set:
             test_df_path = params.test_set
+        elif hf_paths.get("test_set"):
+            test_df_path = hf_paths["test_set"]
         else:
             test_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/test_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
 

@@ -64,9 +64,11 @@ def run_experiment(params):
 
     use_calibration = getattr(params, "calibrated", True)
 
-    if use_calibration and params.val_set is None:
+    hf_repo_id = getattr(params, "hf_repo_id", None)
+
+    if use_calibration and params.val_set is None and hf_repo_id is None:
         raise ValueError("-val_set is required for experiment mode when -calibrated is True.")
-    if params.test_set is None:
+    if params.test_set is None and hf_repo_id is None:
         raise ValueError("-test_set is required for experiment mode to run final test.")
 
     base_sampling_seed = getattr(params, "sampling_seed", None)

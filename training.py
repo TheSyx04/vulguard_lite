@@ -1,5 +1,6 @@
 from .models.init_model import init_model
 from .utils.utils import SRC_PATH, create_dg_cache
+from .utils.hf_dataset import prepare_hf_dataset_paths
 import json
 import os
 import random
@@ -76,10 +77,21 @@ def training(params):
     checkpoint_dir = params.checkpoint_dir if getattr(params, "checkpoint_dir", None) else f"{save_path}/models/checkpoints"
     os.makedirs(checkpoint_dir, exist_ok=True)
     model = init_model(params.model, params.repo_language, params.device)
+
+    hf_paths = prepare_hf_dataset_paths(
+        dg_cache_path,
+        params.repo_name,
+        model.model_name,
+        getattr(params, "hf_repo_id", None),
+        revision=getattr(params, "hf_revision", "main"),
+        split_path=getattr(params, "hf_split_path", None),
+    )
     
     default_inputs = model.default_input.split(",")
     if params.train_set:
         train_df_path = params.train_set
+    elif hf_paths.get("train_set"):
+        train_df_path = hf_paths["train_set"]
     else:
         train_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/train_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
 
@@ -87,6 +99,8 @@ def training(params):
     
     if params.val_set:
         val_df_path = params.val_set
+    elif hf_paths.get("val_set"):
+        val_df_path = hf_paths["val_set"]
     else:
         val_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/val_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
         
@@ -103,7 +117,7 @@ def training(params):
                 "Start training from scratch."
             )
 
-    dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'  if params.dictionary is None else params.dictionary 
+    dictionary = params.dictionary if params.dictionary is not None else hf_paths.get("dictionary", f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl')
     hyperparameters = f"{SRC_PATH}/models/{model.model_name}/hyperparameters.json" if params.hyperparameters is None else params.hyperparameters
     
     print(f"Init model: {model.model_name}")

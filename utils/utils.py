@@ -25,9 +25,7 @@ def open_jsonl(file):
 def create_dg_cache(save_folder):
     dg_cache_path = f"{save_folder}/dg_cache"
     folders = ["save", "repo", "dataset"]
-    if not os.path.exists(dg_cache_path):
-        os.mkdir(dg_cache_path)
+    os.makedirs(dg_cache_path, exist_ok=True)
     for folder in folders:
-        if not os.path.exists(os.path.join(dg_cache_path, folder)):
-            os.mkdir(os.path.join(dg_cache_path, folder))
+        os.makedirs(os.path.join(dg_cache_path, folder), exist_ok=True)
     return dg_cache_path

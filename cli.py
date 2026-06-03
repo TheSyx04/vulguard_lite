@@ -70,6 +70,9 @@ def main(args=None):
     common_parser.add_argument("-repo_clone_path", type=str, default=None, help="Path to clone repository")
     common_parser.add_argument("-repo_language", type=str, required=True, default=None, choices=available_languages, help="Main language of repo")
     common_parser.add_argument("-seed", type=int_gte_0, default=42, help="Random seed for reproducible runs")
+    common_parser.add_argument("-hf_repo_id", type=str, default=None, help="Hugging Face dataset repo id used when train/val/test files are not passed explicitly")
+    common_parser.add_argument("-hf_revision", type=str, default="main", help="Hugging Face dataset revision or branch")
+    common_parser.add_argument("-hf_split_path", type=str, default=None, help="Optional subdirectory in the HF dataset repo to pin a specific split/fold")
     
     training_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     training_parser.set_defaults(func=training)
