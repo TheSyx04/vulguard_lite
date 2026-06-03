@@ -60,6 +60,27 @@ def _pick_file(repo_files, prefix, preferred_suffixes):
     return None
 
 
+def _download_files(repo_id, revision, remote_paths, local_root):
+    if not remote_paths:
+        raise HFDatasetError("No Hugging Face dataset files were selected for download.")
+
+    local_paths = []
+    for remote_path in remote_paths:
+        local_paths.append(
+            _download_file(
+                repo_id,
+                revision,
+                remote_path,
+                os.path.join(local_root, remote_path),
+            )
+        )
+
+    if len(local_paths) == 1:
+        return local_paths[0]
+
+    return ",".join(local_paths)
+
+
 def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, revision="main", split_path=None):
     if not hf_repo_id:
         return {}
@@ -73,68 +94,132 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
     selection_prefix = f"{split_path.rstrip('/')}/" if split_path else f"{repo_name}/"
     repo_prefix = f"{repo_name}/"
 
-    dictionary_remote = _pick_file(repo_files, repo_prefix, [f"dict_{repo_name}.jsonl"])
-    train_remote = _pick_file(
-        repo_files,
-        selection_prefix,
-        [
-            f"train_merge_{repo_name}.jsonl",
-            f"out_train_merge_{repo_name}.jsonl",
-            f"train_patch_{repo_name}.jsonl",
-            f"out_train_patch_{repo_name}.jsonl",
-            f"train_Kamei_features_{repo_name}.jsonl",
-            f"out_train_Kamei_features_{repo_name}.jsonl",
-        ],
-    )
-    val_remote = _pick_file(
-        repo_files,
-        selection_prefix,
-        [
-            f"val_merge_{repo_name}.jsonl",
-            f"out_val_merge_{repo_name}.jsonl",
-            f"val_patch_{repo_name}.jsonl",
-            f"out_val_patch_{repo_name}.jsonl",
-            f"val_Kamei_features_{repo_name}.jsonl",
-            f"out_val_Kamei_features_{repo_name}.jsonl",
-        ],
-    )
-    test_remote = _pick_file(
-        repo_files,
-        repo_prefix,
-        [
-            f"test_{model_name}_{repo_name}.jsonl",
-            f"out_test_{model_name}_{repo_name}.jsonl",
-        ],
-    )
+    dictionary_remote = None if model_name == "tlel" else _pick_file(repo_files, repo_prefix, [f"dict_{repo_name}.jsonl"])
+
+    if model_name == "simcom":
+        train_remote = [
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_train_Kamei_features_{repo_name}.jsonl", f"train_Kamei_features_{repo_name}.jsonl"],
+            ),
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_train_patch_{repo_name}.jsonl", f"train_patch_{repo_name}.jsonl"],
+            ),
+        ]
+        val_remote = [
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_val_Kamei_features_{repo_name}.jsonl", f"val_Kamei_features_{repo_name}.jsonl"],
+            ),
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_val_patch_{repo_name}.jsonl", f"val_patch_{repo_name}.jsonl"],
+            ),
+        ]
+        test_remote = [
+            _pick_file(
+                repo_files,
+                repo_prefix,
+                [f"out_test_tlel_{repo_name}.jsonl", f"test_tlel_{repo_name}.jsonl"],
+            ),
+            _pick_file(
+                repo_files,
+                repo_prefix,
+                [f"out_test_simcom_{repo_name}.jsonl", f"test_simcom_{repo_name}.jsonl"],
+            ),
+        ]
+        if not all(train_remote):
+            raise HFDatasetError(
+                f"Could not resolve both simcom training files for {repo_name} under {selection_prefix}."
+            )
+        if not all(val_remote):
+            raise HFDatasetError(
+                f"Could not resolve both simcom validation files for {repo_name} under {selection_prefix}."
+            )
+        if not all(test_remote):
+            raise HFDatasetError(
+                f"Could not resolve both simcom test files for {repo_name} under {repo_prefix}."
+            )
+    elif model_name == "tlel":
+        train_remote = _pick_file(
+            repo_files,
+            selection_prefix,
+            [f"out_train_Kamei_features_{repo_name}.jsonl", f"train_Kamei_features_{repo_name}.jsonl"],
+        )
+        val_remote = _pick_file(
+            repo_files,
+            selection_prefix,
+            [f"out_val_Kamei_features_{repo_name}.jsonl", f"val_Kamei_features_{repo_name}.jsonl"],
+        )
+        test_remote = _pick_file(
+            repo_files,
+            repo_prefix,
+            [f"out_test_tlel_{repo_name}.jsonl", f"test_tlel_{repo_name}.jsonl"],
+        )
+        if not train_remote or not val_remote or not test_remote:
+            raise HFDatasetError(
+                f"Could not resolve one or more TLEL dataset files for {repo_name} using {selection_prefix}."
+            )
+    else:
+        train_remote = _pick_file(
+            repo_files,
+            selection_prefix,
+            [
+                f"out_train_merge_{repo_name}.jsonl",
+                f"train_merge_{repo_name}.jsonl",
+                f"out_train_patch_{repo_name}.jsonl",
+                f"train_patch_{repo_name}.jsonl",
+                f"out_train_Kamei_features_{repo_name}.jsonl",
+                f"train_Kamei_features_{repo_name}.jsonl",
+            ],
+        )
+        val_remote = _pick_file(
+            repo_files,
+            selection_prefix,
+            [
+                f"out_val_merge_{repo_name}.jsonl",
+                f"val_merge_{repo_name}.jsonl",
+                f"out_val_patch_{repo_name}.jsonl",
+                f"val_patch_{repo_name}.jsonl",
+                f"out_val_Kamei_features_{repo_name}.jsonl",
+                f"val_Kamei_features_{repo_name}.jsonl",
+            ],
+        )
+        test_remote = _pick_file(
+            repo_files,
+            repo_prefix,
+            [
+                f"out_test_{model_name}_{repo_name}.jsonl",
+                f"test_{model_name}_{repo_name}.jsonl",
+            ],
+        )
+        if not train_remote or not val_remote or not test_remote:
+            raise HFDatasetError(
+                f"Could not resolve one or more {model_name} dataset files for {repo_name}."
+            )
+
+    if model_name != "tlel" and not dictionary_remote:
+        raise HFDatasetError(f"Could not resolve dictionary file dict_{repo_name}.jsonl for {repo_name}.")
 
     resolved = {}
     if dictionary_remote:
-        resolved["dictionary"] = _download_file(
-            hf_repo_id,
-            revision,
-            dictionary_remote,
-            os.path.join(local_root, dictionary_remote),
-        )
+        resolved["dictionary"] = _download_files(hf_repo_id, revision, [dictionary_remote], local_root)
     if train_remote:
-        resolved["train_set"] = _download_file(
-            hf_repo_id,
-            revision,
-            train_remote,
-            os.path.join(local_root, train_remote),
-        )
+        remote_paths = train_remote if isinstance(train_remote, list) else [train_remote]
+        remote_paths = [path for path in remote_paths if path]
+        resolved["train_set"] = _download_files(hf_repo_id, revision, remote_paths, local_root)
     if val_remote:
-        resolved["val_set"] = _download_file(
-            hf_repo_id,
-            revision,
-            val_remote,
-            os.path.join(local_root, val_remote),
-        )
+        remote_paths = val_remote if isinstance(val_remote, list) else [val_remote]
+        remote_paths = [path for path in remote_paths if path]
+        resolved["val_set"] = _download_files(hf_repo_id, revision, remote_paths, local_root)
     if test_remote:
-        resolved["test_set"] = _download_file(
-            hf_repo_id,
-            revision,
-            test_remote,
-            os.path.join(local_root, test_remote),
-        )
+        remote_paths = test_remote if isinstance(test_remote, list) else [test_remote]
+        remote_paths = [path for path in remote_paths if path]
+        resolved["test_set"] = _download_files(hf_repo_id, revision, remote_paths, local_root)
 
     return resolved

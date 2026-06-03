@@ -99,7 +99,12 @@ def evaluating(params):
             split_path=getattr(params, "hf_split_path", None),
         )
 
-        dictionary = params.dictionary if params.dictionary is not None else hf_paths.get("dictionary", f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl')
+        if model.model_name == "tlel":
+            hf_paths["dictionary"] = None
+
+        dictionary = params.dictionary if params.dictionary is not None else hf_paths.get("dictionary")
+        if dictionary is None and model.model_name != "tlel":
+            dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'
         hyperparameters = f"{SRC_PATH}/models/{model.model_name}/hyperparameters.json" if params.hyperparameters is None else params.hyperparameters
         model_path = f'{dg_cache_path}/save/{params.repo_name}/models/best_epoch' if params.model_path is None else params.model_path
         print(f"Init model: {model.model_name}")

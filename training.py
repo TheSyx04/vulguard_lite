@@ -86,6 +86,9 @@ def training(params):
         revision=getattr(params, "hf_revision", "main"),
         split_path=getattr(params, "hf_split_path", None),
     )
+
+    if model.model_name == "tlel":
+        hf_paths["dictionary"] = None
     
     default_inputs = model.default_input.split(",")
     if params.train_set:
@@ -117,7 +120,9 @@ def training(params):
                 "Start training from scratch."
             )
 
-    dictionary = params.dictionary if params.dictionary is not None else hf_paths.get("dictionary", f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl')
+    dictionary = params.dictionary if params.dictionary is not None else hf_paths.get("dictionary")
+    if dictionary is None and model.model_name != "tlel":
+        dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'
     hyperparameters = f"{SRC_PATH}/models/{model.model_name}/hyperparameters.json" if params.hyperparameters is None else params.hyperparameters
     
     print(f"Init model: {model.model_name}")

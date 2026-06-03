@@ -52,8 +52,9 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
 
 
 def run_experiment(params):
-    if params.model == "deepjit" and params.dictionary is None:
-        raise ValueError("-dictionary is required for experiment mode when -model is deepjit.")
+    hf_repo_id = getattr(params, "hf_repo_id", None)
+    if params.model in {"deepjit", "simcom"} and params.dictionary is None and hf_repo_id is None:
+        raise ValueError("-dictionary is required for experiment mode when -model is deepjit or simcom, unless -hf_repo_id is provided.")
 
     dg_cache_path = create_dg_cache(params.dg_save_folder)
     base_save_path = f"{dg_cache_path}/save/{params.repo_name}"
@@ -63,8 +64,6 @@ def run_experiment(params):
     os.makedirs(experiment_root, exist_ok=True)
 
     use_calibration = getattr(params, "calibrated", True)
-
-    hf_repo_id = getattr(params, "hf_repo_id", None)
 
     if use_calibration and params.val_set is None and hf_repo_id is None:
         raise ValueError("-val_set is required for experiment mode when -calibrated is True.")
