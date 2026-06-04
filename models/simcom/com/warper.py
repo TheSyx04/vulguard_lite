@@ -163,7 +163,7 @@ class Com(BaseWraper):
             valid_score = pr_auc
             if valid_score > best_valid_score:
                 best_valid_score = valid_score
-                print('Save a better model', best_valid_score.item())
+                print('Save a better model', best_valid_score)
                 self.save(
                     save_path=save_path,
                     epoch=epoch,
