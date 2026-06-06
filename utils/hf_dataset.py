@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 from functools import lru_cache
 from urllib.error import HTTPError, URLError
@@ -15,18 +16,39 @@ def _normalize_repo_id(repo_id):
     return quote(repo_id, safe="/")
 
 
+def _parse_next_link(link_header):
+    """Extract the 'next' URL from an RFC 5988 Link header, if present."""
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        part = part.strip()
+        match = re.match(r'<([^>]+)>\s*;.*\brel=["\']?next["\']?', part)
+        if match:
+            return match.group(1)
+    return None
+
+
 @lru_cache(maxsize=16)
 def _list_dataset_files(repo_id, revision="main"):
     repo_id_quoted = _normalize_repo_id(repo_id)
     revision_quoted = quote(revision, safe="")
     url = f"https://huggingface.co/api/datasets/{repo_id_quoted}/tree/{revision_quoted}?recursive=1"
-    try:
-        with urlopen(url) as response:
-            entries = json.load(response)
-    except (HTTPError, URLError, json.JSONDecodeError) as exc:
-        raise HFDatasetError(f"Failed to list Hugging Face dataset files from {repo_id}@{revision}: {exc}") from exc
 
-    return [entry["path"] for entry in entries if entry.get("type") == "file" and "path" in entry]
+    all_entries = []
+    while url:
+        try:
+            with urlopen(url) as response:
+                entries = json.load(response)
+                link_header = response.headers.get("Link", "")
+        except (HTTPError, URLError, json.JSONDecodeError) as exc:
+            raise HFDatasetError(
+                f"Failed to list Hugging Face dataset files from {repo_id}@{revision}: {exc}"
+            ) from exc
+        all_entries.extend(entries)
+        url = _parse_next_link(link_header)
+
+    return [entry["path"] for entry in all_entries if entry.get("type") == "file" and "path" in entry]
+
 
 
 def _download_file(repo_id, revision, remote_path, local_path):
