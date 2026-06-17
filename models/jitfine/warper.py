@@ -6,7 +6,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from transformers import  AdamW, get_linear_schedule_with_warmup, RobertaConfig, RobertaTokenizer, RobertaModel
 
-from vulguard_lite.models.BaseWraper import BaseWraper
+from ..BaseWraper import BaseWraper
 
 from .model import Model
 from .dataset import TextDataset

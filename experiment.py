@@ -76,10 +76,40 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
     return metrics_row
 
 
+# Models that do not use a dictionary file.
+_NO_DICT_MODELS = {"tlel", "lapredict", "lr", "jitfine"}
+# Models that do not use a hyperparameters.json file at all.
+_NO_HYPERPARAMS_MODELS = {"lapredict", "lr"}
+# Sklearn-based models: no GPU device, no epoch checkpoints.
+_SKLEARN_MODELS = {"lapredict", "lr"}
+
+
+def _resolve_hyperparameters(params):
+    """Return the resolved hyperparameters path for the current model.
+
+    - lapredict / lr  -> None (no hyperparameter file).
+    - all others      -> <SRC_PATH>/models/<model>/hyperparameters.json.
+    """
+    from .utils.utils import SRC_PATH
+
+    if params.hyperparameters is not None:
+        return params.hyperparameters
+    if params.model in _NO_HYPERPARAMS_MODELS:
+        return None
+    return f"{SRC_PATH}/models/{params.model}/hyperparameters.json"
+
+
 def run_experiment(params):
     hf_repo_id = getattr(params, "hf_repo_id", None)
-    if params.model in {"deepjit", "simcom"} and params.dictionary is None and hf_repo_id is None:
-        raise ValueError("-dictionary is required for experiment mode when -model is deepjit or simcom, unless -hf_repo_id is provided.")
+    if params.model not in _NO_DICT_MODELS and params.dictionary is None and hf_repo_id is None:
+        raise ValueError(
+            f"-dictionary is required for experiment mode when -model is {params.model}, "
+            "unless -hf_repo_id is provided."
+        )
+
+    # Pre-resolve hyperparameters so training and evaluating both use the
+    # correct path regardless of where the model package lives.
+    params.hyperparameters = _resolve_hyperparameters(params)
 
     dg_cache_path = create_dg_cache(params.dg_save_folder)
     base_save_path = f"{dg_cache_path}/save/{params.repo_name}"
@@ -110,12 +140,16 @@ def run_experiment(params):
         run_dir = f"{experiment_root}/run_{run_idx}"
         os.makedirs(run_dir, exist_ok=True)
         model_name = params.model
-        run_checkpoint_dir = (
-            f"{base_checkpoint_dir}/run_{run_idx}"
-            if base_checkpoint_dir
-            else f"{run_dir}/checkpoints"
-        )
-        os.makedirs(run_checkpoint_dir, exist_ok=True)
+        # Sklearn models (lapredict, lr) save via pickle and have no checkpoint concept.
+        if model_name not in _SKLEARN_MODELS:
+            run_checkpoint_dir = (
+                f"{base_checkpoint_dir}/run_{run_idx}"
+                if base_checkpoint_dir
+                else f"{run_dir}/checkpoints"
+            )
+            os.makedirs(run_checkpoint_dir, exist_ok=True)
+        else:
+            run_checkpoint_dir = None
 
         run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"
         if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
@@ -134,6 +168,8 @@ def run_experiment(params):
                 "sampling_run_id": run_idx,
                 "sampling_seed": run_sampling_seed,
                 "checkpoint_dir": run_checkpoint_dir,
+                # Propagate the pre-resolved hyperparameters path.
+                "hyperparameters": params.hyperparameters,
             },
         )
         print("[1/3] Training...")

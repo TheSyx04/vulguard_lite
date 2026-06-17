@@ -116,7 +116,8 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
     selection_prefix = f"{split_path.rstrip('/')}/" if split_path else f"{repo_name}/"
     repo_prefix = f"{repo_name}/"
 
-    dictionary_remote = None if model_name == "tlel" else _pick_file(repo_files, repo_prefix, [f"dict_{repo_name}.jsonl"])
+    NO_DICT_MODELS = {"tlel", "lapredict", "lr", "jitfine"}
+    dictionary_remote = None if model_name in NO_DICT_MODELS else _pick_file(repo_files, repo_prefix, [f"dict_{repo_name}.jsonl"])
 
     if model_name == "simcom":
         train_remote = [
@@ -167,7 +168,8 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
             raise HFDatasetError(
                 f"Could not resolve both simcom test files for {repo_name} under {repo_prefix}."
             )
-    elif model_name == "tlel":
+    elif model_name in {"tlel", "lapredict", "lr"}:
+        # All three use only the Kamei_features file.
         train_remote = _pick_file(
             repo_files,
             selection_prefix,
@@ -185,9 +187,61 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
         )
         if not train_remote or not val_remote or not test_remote:
             raise HFDatasetError(
-                f"Could not resolve one or more TLEL dataset files for {repo_name} using {selection_prefix}."
+                f"Could not resolve one or more {model_name} dataset files for {repo_name} using {selection_prefix}."
+            )
+    elif model_name == "jitfine":
+        # JITFine uses Kamei_features (like tlel) + merge (like deepjit).
+        train_remote = [
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_train_Kamei_features_{repo_name}.jsonl", f"train_Kamei_features_{repo_name}.jsonl"],
+            ),
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_train_merge_{repo_name}.jsonl", f"train_merge_{repo_name}.jsonl"],
+            ),
+        ]
+        val_remote = [
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_val_Kamei_features_{repo_name}.jsonl", f"val_Kamei_features_{repo_name}.jsonl"],
+            ),
+            _pick_file(
+                repo_files,
+                selection_prefix,
+                [f"out_val_merge_{repo_name}.jsonl", f"val_merge_{repo_name}.jsonl"],
+            ),
+        ]
+        test_remote = [
+            _pick_file(
+                repo_files,
+                repo_prefix,
+                [f"out_test_tlel_{repo_name}.jsonl", f"test_tlel_{repo_name}.jsonl"],
+            ),
+            _pick_file(
+                repo_files,
+                repo_prefix,
+                [f"out_test_jitfine_{repo_name}.jsonl", f"test_jitfine_{repo_name}.jsonl",
+                 f"out_test_merge_{repo_name}.jsonl", f"test_merge_{repo_name}.jsonl"],
+            ),
+        ]
+        if not all(train_remote):
+            raise HFDatasetError(
+                f"Could not resolve both jitfine training files (Kamei_features + merge) for {repo_name} under {selection_prefix}."
+            )
+        if not all(val_remote):
+            raise HFDatasetError(
+                f"Could not resolve both jitfine validation files (Kamei_features + merge) for {repo_name} under {selection_prefix}."
+            )
+        if not all(test_remote):
+            raise HFDatasetError(
+                f"Could not resolve both jitfine test files (Kamei_features + merge) for {repo_name} under {repo_prefix}."
             )
     else:
+        # Generic fallback (e.g. deepjit): single file resolved by preferred suffix order.
         train_remote = _pick_file(
             repo_files,
             selection_prefix,
@@ -225,7 +279,7 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
                 f"Could not resolve one or more {model_name} dataset files for {repo_name}."
             )
 
-    if model_name != "tlel" and not dictionary_remote:
+    if model_name not in NO_DICT_MODELS and not dictionary_remote:
         raise HFDatasetError(f"Could not resolve dictionary file dict_{repo_name}.jsonl for {repo_name}.")
 
     resolved = {}

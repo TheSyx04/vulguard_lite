@@ -1,9 +1,9 @@
-from .deepjit.warper import DeepJIT
-from .tlel.warper import TLELModel
-from .simcom.warper import SimCom
-from .lr.warper import LogisticRegression
-from .lapredict.warper import LAPredict
-from .jitfine.warper import JITFine
+from .models.deepjit.warper import DeepJIT
+from .models.tlel.warper import TLELModel
+from .models.simcom.warper import SimCom
+from .models.lr.warper import LogisticRegression
+from .models.lapredict.warper import LAPredict
+from .models.jitfine.warper import JITFine
 
 models = ["deepjit", "simcom", "lapredict", "tlel", "lr", "jitfine"]
 
