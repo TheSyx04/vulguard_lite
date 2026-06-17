@@ -4,7 +4,7 @@ import numpy as np
 from tqdm import tqdm
 
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
-from transformers import  AdamW, get_linear_schedule_with_warmup, RobertaConfig, RobertaTokenizer, RobertaModel
+from transformers import get_linear_schedule_with_warmup, RobertaConfig, RobertaTokenizer, RobertaModel
 
 from ..BaseWraper import BaseWraper
 
@@ -87,7 +87,7 @@ class JITFine(BaseWraper):
                 'weight_decay': 0.0
             },
         ]
-        self.optimizer = AdamW(optimizer_grouped_parameters, lr=self.hyperparameters["train"]["learning_rate"], eps=self.hyperparameters["adam_epsilon"])
+        self.optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=self.hyperparameters["train"]["learning_rate"], eps=self.hyperparameters["adam_epsilon"])
         
         
         if model_path is not None:
