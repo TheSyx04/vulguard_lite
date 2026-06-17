@@ -225,6 +225,7 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
                 repo_files,
                 repo_prefix,
                 [f"out_test_jitfine_{repo_name}.jsonl", f"test_jitfine_{repo_name}.jsonl",
+                 f"out_test_deepjit_{repo_name}.jsonl", f"test_deepjit_{repo_name}.jsonl",
                  f"out_test_merge_{repo_name}.jsonl", f"test_merge_{repo_name}.jsonl"],
             ),
         ]
