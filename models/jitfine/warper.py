@@ -278,7 +278,7 @@ class JITFine(BaseWraper):
                         print(f"Saving best model checkpoint to {save_path}")
                     else:
                         self.patience += 1
-                        if self.patience > self.hyperparameters["patience"] * 5:
+                        if self.patience > self.hyperparameters["train"]["patience"] * 5:
                             print('Patience greater than {}, early stop!'.format(5 * self.patience))
                             return
                 bar.update()            
