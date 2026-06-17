@@ -44,31 +44,84 @@ def _undersample_jsonl(input_path, output_path, seed=None):
     return output_path
 
 
+def _sample_commit_ids(reference_path, seed=None):
+    """Pick a balanced set of commit_ids from reference_path.
+    Returns the sampled set, or None if one class is empty (skip sampling).
+    """
+    if seed is not None:
+        random.seed(seed)
+    class_0_ids, class_1_ids = [], []
+    with open(reference_path, "r", encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            if int(obj.get("label", 0)) == 0:
+                class_0_ids.append(obj["commit_id"])
+            else:
+                class_1_ids.append(obj["commit_id"])
+
+    minority_size = min(len(class_0_ids), len(class_1_ids))
+    if minority_size == 0:
+        return None
+
+    sampled = set(random.sample(class_0_ids, minority_size)) | set(random.sample(class_1_ids, minority_size))
+    print(f"Paired sampling reference ({os.path.basename(reference_path)}): "
+          f"class_0={len(class_0_ids)}, class_1={len(class_1_ids)} → keeping {len(sampled)} commits")
+    return sampled
+
+
+def _filter_jsonl_by_ids(input_path, output_path, commit_ids):
+    """Write only lines whose commit_id is in commit_ids, preserving file order."""
+    kept = 0
+    with open(input_path, "r", encoding="utf-8") as fin, \
+         open(output_path, "w", encoding="utf-8") as fout:
+        for line in fin:
+            obj = json.loads(line)
+            if obj.get("commit_id") in commit_ids:
+                fout.write(json.dumps(obj) + "\n")
+                kept += 1
+    print(f"Paired filter ({os.path.basename(input_path)}) → {kept} rows kept → {output_path}")
+    return output_path
+
+
 def _apply_undersampling_if_needed(train_df_path, params, dg_cache_path):
     if not getattr(params, "sampling", False):
         return train_df_path
 
     sampling_seed = getattr(params, "sampling_seed", None)
     sampling_run_id = getattr(params, "sampling_run_id", None)
+    run_suffix = f"_run_{sampling_run_id}" if sampling_run_id is not None else ""
 
-    sampled_paths = []
-    for path in train_df_path.split(","):
-        clean_path = path.strip()
-        if not clean_path:
-            continue
-
-        base_name = os.path.basename(clean_path)
-        name, ext = os.path.splitext(base_name)
-        sampled_dir = os.path.join(dg_cache_path, "dataset", params.repo_name, "sampled")
-        os.makedirs(sampled_dir, exist_ok=True)
-        run_suffix = f"_run_{sampling_run_id}" if sampling_run_id is not None else ""
-        sampled_path = os.path.join(sampled_dir, f"{name}_undersampled{run_suffix}{ext}")
-        sampled_paths.append(_undersample_jsonl(clean_path, sampled_path, seed=sampling_seed))
-
-    if not sampled_paths:
+    paths = [p.strip() for p in train_df_path.split(",") if p.strip()]
+    if not paths:
         return train_df_path
 
+    sampled_dir = os.path.join(dg_cache_path, "dataset", params.repo_name, "sampled")
+    os.makedirs(sampled_dir, exist_ok=True)
+
+    def _sampled_path(clean_path):
+        base_name = os.path.basename(clean_path)
+        name, ext = os.path.splitext(base_name)
+        return os.path.join(sampled_dir, f"{name}_undersampled{run_suffix}{ext}")
+
+    if len(paths) == 1:
+        # Single-file model (tlel, lapredict, lr, deepjit …): normal undersampling.
+        result = _undersample_jsonl(paths[0], _sampled_path(paths[0]), seed=sampling_seed)
+        return result
+
+    # Multi-file model (JITFine, SimCom …): sample commit_ids ONCE from the last
+    # file (the code/merge file that TextDataset uses as primary source), then
+    # filter ALL files to exactly that set — so every paired file stays consistent.
+    commit_ids = _sample_commit_ids(paths[-1], seed=sampling_seed)
+    if commit_ids is None:
+        print("Skip paired sampling because one class is empty.")
+        return train_df_path
+
+    sampled_paths = [
+        _filter_jsonl_by_ids(p, _sampled_path(p), commit_ids)
+        for p in paths
+    ]
     return ",".join(sampled_paths)
+
     
 def training(params):
     # create save folders
