@@ -14,7 +14,7 @@ from .dataset import TextDataset
 from sklearn.metrics import precision_recall_curve, auc
 
 def get_auc(ground_truth, predict):
-    precisions, recalls, _ = precision_recall_curve(y_true=ground_truth, probas_pred=predict)
+    precisions, recalls, _ = precision_recall_curve(y_true=ground_truth, y_score=predict)
     pr_auc = auc(recalls, precisions)
     
     return pr_auc
@@ -192,8 +192,7 @@ class JITFine(BaseWraper):
         
         val_dataset, val_sampler = self.preprocess(val_df, mode="val", **kwarg)
         val_dataloader = DataLoader(val_dataset, sampler=val_sampler, batch_size=self.hyperparameters["train"]["eval_batch_size"])
-        val_ground_truth = [ example.label for example in val_dataset.examples if example.label is not None ]
-        # print(val_ground_truth)
+        val_ground_truth = None  # derived from inference output to guarantee alignment
         
         if self.hyperparameters["max_steps"] > 0:
             max_steps =  self.hyperparameters["max_steps"]
@@ -263,7 +262,8 @@ class JITFine(BaseWraper):
                 if (step + 1) % save_steps == 0:
                     prediction = self.inference(infer_df=val_df, threshold=threshold, eval_dataloader= val_dataloader,**kwarg)
                     val_predict = prediction.loc[:, "probability"]
-            
+                    val_ground_truth = prediction.loc[:, "label"].tolist() if "label" in prediction.columns else val_ground_truth
+
                     pr_auc = get_auc(val_ground_truth, val_predict)
                     # Save model checkpoint
                     if pr_auc > best_pr_auc:
