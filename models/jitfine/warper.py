@@ -170,9 +170,10 @@ class JITFine(BaseWraper):
             bar.update()
             
         # calculate scores
-        logits = np.concatenate(logits, 0)
+        logits = np.concatenate(logits, 0).squeeze(-1)    # (N,1) → (N,)
         commit_ids = np.concatenate(commit_ids, 0)
-        y_trues = np.concatenate(y_trues, 0)
+        y_trues = np.concatenate(y_trues, 0).squeeze(-1)  # guard against (N,1)
+
         y_trues = y_trues if y_trues[0] is not None else None
         
         final_prediction = self.postprocess(commit_ids=commit_ids, outputs=logits, threshold=threshold, labels=y_trues)
