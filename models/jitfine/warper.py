@@ -40,7 +40,8 @@ class JITFine(BaseWraper):
         
         self.val_dataloader = None
                 
-        self.default_input = "Kamei_features,merge"
+        self.default_input = "Kamei_features,merge"  # train / val file prefixes
+        self.default_test_input = "tlel,deepjit"       # test file prefixes (test_tlel + test_deepjit)
 
     def __call__(self, message, code):
         return self.model(message, code)

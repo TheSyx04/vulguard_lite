@@ -10,7 +10,8 @@ class TLELModel(BaseWraper):
         self.initialized = False
         self.model = None
         self.columns = (["ns","nd","nf","entropy","la","ld","lt","fix","ndev","age","nuc","exp","rexp","sexp"])
-        self.default_input = "Kamei_features"
+        self.default_input = "Kamei_features"       # train / val file prefix
+        self.default_test_input = "tlel"              # test file prefix (test_tlel_<repo>.jsonl)
         
     def initialize(self, **kwarg):
         model_path = kwarg.get("model_path")

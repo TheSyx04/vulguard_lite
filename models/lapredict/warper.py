@@ -10,7 +10,8 @@ class LAPredict(BaseWraper):
         self.initialized = False
         self.model = None
         self.columns = (["la"])
-        self.default_input = "Kamei_features"
+        self.default_input = "Kamei_features"       # train / val file prefix
+        self.default_test_input = "tlel"              # test file prefix (test_tlel_<repo>.jsonl)
                 
     def initialize(self, **kwarg):
         model_path = kwarg.get("model_path")

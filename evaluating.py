@@ -111,13 +111,13 @@ def evaluating(params):
         print(f"Init model: {model.model_name}")
         model.initialize(model_path=model_path, dictionary=dictionary, hyperparameters=hyperparameters)
 
-        default_inputs = model.default_input.split(",")
+
         if params.test_set:
             test_df_path = params.test_set
         elif hf_paths.get("test_set"):
             test_df_path = hf_paths["test_set"]
         else:
-            test_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/test_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
+            test_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/test_{t}_{params.repo_name}.jsonl' for t in getattr(model, 'default_test_input', model.default_input).split(",")])
 
         current_threshold = threshold
         result_df = model.inference(infer_df=test_df_path, threshold=current_threshold, params=params)
