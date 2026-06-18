@@ -201,7 +201,7 @@ class JITFine(BaseWraper):
         
         save_steps = max(len(train_dataloader) // 5, 1)
         warmup_steps = self.hyperparameters["warmup_steps"]
-        total_epochs = self.hyperparameters["epoches"] if params.epochs is None else params.epochs
+        total_epochs = self.hyperparameters["epochs"] if params.epochs is None else params.epochs
 
         # Prepare optimizer and schedule (linear warmup and decay)
         

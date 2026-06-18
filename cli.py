@@ -144,8 +144,16 @@ def main(args=None):
         metavar=("START", "END", "STEPS"),
         help="Threshold search range for calibration: START END STEPS (example: -calibration_range 0 1 10001)",
     )
-    
-
+    experiment_parser.add_argument(
+        "-hf_output_folder",
+        type=str,
+        default=None,
+        help=(
+            "Custom remote folder path inside the HF dataset repo where experiment results are uploaded "
+            "(e.g. 'output/linux/deepjit/sampling/deepjit_linux_1_3_sampling'). "
+            "When omitted the path is derived automatically from the model, repo, split, and sampling settings."
+        ),
+    )
     parser = argparse.ArgumentParser(prog="VulGuard", description="A tool for mining, training, evaluating for Just-in-Time Vulnerability Prediction")
     parser.add_argument("-version", action="version", version="%(prog)s " + __version__)
     parser.add_argument("-debug", action="store_true", help="Turn on system debug print")

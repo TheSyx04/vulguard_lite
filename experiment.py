@@ -1,3 +1,41 @@
+"""experiment.py — Full train → calibrate → test pipeline for VulGuard Lite.
+
+Public entry point
+------------------
+    run_experiment(params)
+        Orchestrates N repeated experiment runs for a single model on a single
+        repository split.  Each run executes three phases:
+
+        1. **Training** — fit the model on the (optionally undersampled) training
+           set and save the best checkpoint to disk.
+        2. **Calibration** (optional) — run inference on the validation set and
+           choose the probability threshold that maximises the chosen effort
+           metric under a given inspection *budget*.
+        3. **Testing** — run inference on the test set with the calibrated (or
+           fixed) threshold and record all evaluation metrics.
+
+        Results for every run / budget combination are saved as CSV files inside
+        an *experiment root* directory and, optionally, uploaded to a Hugging
+        Face dataset repository.
+
+Directory layout produced
+-------------------------
+    <dg_save_folder>/dg_cache/save/<repo_name>/experiments/<slug>/
+        run_1/
+            <model>_<budget>_val_scores.csv
+            <model>_<budget>_val_metrics.csv
+            <model>_<budget>_val_threshold_calibration.csv
+            <model>_<budget>_selected_threshold.json
+            <model>_<budget>_test_scores.csv
+            <model>_<budget>_test_metrics.csv
+            <model>_test_metrics.csv          ← aggregated per-run summary
+        run_2/ …
+        <slug>_test_all_run.csv               ← single-budget final table
+        <slug>_test_all_budget.csv            ← multi-budget final table
+
+where ``<slug>`` is ``<model>_<repo>_<split>_<sampling_tag>``.
+"""
+
 import json
 import os
 import shutil
@@ -13,17 +51,49 @@ from .utils.reproducibility import seed_everything
 
 
 def _clone_params(params, overrides):
+    """Return a shallow copy of *params* (an argparse Namespace) with *overrides* applied.
+
+    Parameters
+    ----------
+    params : argparse.Namespace
+        Original parameter namespace produced by the CLI parser.
+    overrides : dict
+        Key/value pairs that replace or extend the namespace for a sub-phase
+        (e.g. setting ``model_path=None`` before training, or injecting a
+        per-run ``sampling_run_id``).
+
+    Returns
+    -------
+    argparse.Namespace
+        New namespace — does **not** mutate *params*.
+    """
     data = vars(params).copy()
     data.update(overrides)
     return Namespace(**data)
 
 
 def _safe_remove(path):
+    """Delete *path* if it exists; silently do nothing otherwise."""
     if os.path.exists(path):
         os.remove(path)
 
 
 def _normalize_budgets(budget_value):
+    """Coerce the CLI *budget* value to a list of floats.
+
+    The experiment parser accepts ``-budget`` with ``nargs='+'``, so
+    *budget_value* may already be a list when multiple budgets are given, or
+    a bare scalar when only one is specified.
+
+    Parameters
+    ----------
+    budget_value : float | list[float]
+        Raw value from ``params.budget``.
+
+    Returns
+    -------
+    list[float]
+    """
     if isinstance(budget_value, (list, tuple)):
         budgets = list(budget_value)
     else:
@@ -33,10 +103,27 @@ def _normalize_budgets(budget_value):
 
 
 def _budget_tag(budget):
+    """Return a filesystem-safe string label for a budget value.
+
+    Examples::
+
+        _budget_tag(0.05)   → "budget_0p05"
+        _budget_tag(1.0)    → "budget_1"
+        _budget_tag(0.1)    → "budget_0p1"
+    """
     return f"budget_{budget:.4f}".replace(".", "p").rstrip("0").rstrip("p")
 
 
 def _split_tag(params):
+    """Derive a short tag that identifies the data split used for this run.
+
+    Resolution order:
+
+    1. If ``-hf_split_path`` is set, use its last path component
+       (e.g. ``linux/linux_3_1`` → ``"linux_3_1"``).
+    2. If ``-test_set`` is provided manually, return ``"manual"``.
+    3. Otherwise return ``"default"``.
+    """
     hf_split_path = getattr(params, "hf_split_path", None)
     if hf_split_path:
         return hf_split_path.rstrip("/").split("/")[-1]
@@ -49,18 +136,59 @@ def _split_tag(params):
 
 
 def _sampling_tag(params):
+    """Return ``"sampling"`` if undersampling is enabled, else ``"no_sampling"``."""
     return "sampling" if getattr(params, "sampling", False) else "no_sampling"
 
 
 def _experiment_slug(params):
+    """Return a unique, human-readable identifier for this experiment configuration.
+
+    Format: ``<model>_<repo_name>_<split_tag>_<sampling_tag>``
+
+    Used as the name of the experiment root directory and as a prefix for
+    summary CSV files.
+    """
     return f"{params.model}_{params.repo_name}_{_split_tag(params)}_{_sampling_tag(params)}"
 
 
 def _hf_output_path(params):
+    """Return the remote path within the HF dataset repo where results are uploaded.
+
+    If ``-hf_output_folder`` is supplied it is used as-is (leading/trailing
+    slashes are stripped).  Otherwise the path is derived automatically:
+
+        ``output/<repo_name>/<model>/<sampling_tag>/<slug>``
+    """
+    custom = getattr(params, "hf_output_folder", None)
+    if custom:
+        return custom.strip("/")
     return f"output/{params.repo_name}/{params.model}/{_sampling_tag(params)}/{_experiment_slug(params)}"
 
 
 def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload):
+    """Read a per-run metrics CSV and attach run-level metadata columns.
+
+    Parameters
+    ----------
+    metrics_file : str
+        Path to the ``<model>.csv`` produced by ``evaluating()``.
+    model_name : str
+        Name of the model (written into the ``"model"`` column).
+    run_idx : int
+        1-based run index.
+    budget : float
+        Inspection budget for this calibration sweep (0–1).
+    threshold : float
+        Decision threshold used during the test evaluation.
+    threshold_payload : dict | None
+        Full threshold selection payload written by calibration, or ``None``
+        when calibration was skipped.
+
+    Returns
+    -------
+    dict
+        One row suitable for appending to the cross-run summary DataFrame.
+    """
     metrics_df = pd.read_csv(metrics_file, index_col=0).reset_index()
     metrics_df = metrics_df.rename(columns={"index": "model"})
     metrics_row = metrics_df.iloc[0].to_dict()
@@ -76,6 +204,10 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
     return metrics_row
 
 
+# ---------------------------------------------------------------------------
+# Model-group constants (shared with training.py and evaluating.py)
+# ---------------------------------------------------------------------------
+
 # Models that do not use a dictionary file.
 _NO_DICT_MODELS = {"tlel", "lapredict", "lr", "jitfine"}
 # Models that do not use a hyperparameters.json file at all.
@@ -87,8 +219,11 @@ _SKLEARN_MODELS = {"lapredict", "lr"}
 def _resolve_hyperparameters(params):
     """Return the resolved hyperparameters path for the current model.
 
-    - lapredict / lr  -> None (no hyperparameter file).
-    - all others      -> <SRC_PATH>/models/<model>/hyperparameters.json.
+    - ``lapredict`` / ``lr``  → ``None`` (no hyperparameter file).
+    - all others              → ``<SRC_PATH>/models/<model>/hyperparameters.json``.
+
+    If ``params.hyperparameters`` is already set (e.g. passed via ``-hyperparameters``
+    on the CLI), it is returned unchanged.
     """
     from .utils.utils import SRC_PATH
 
@@ -100,6 +235,44 @@ def _resolve_hyperparameters(params):
 
 
 def run_experiment(params):
+    """Run the full train → calibrate → test pipeline for one model / split.
+
+    This function is registered as the ``func`` for the ``experiment`` CLI
+    sub-command (see ``cli.py``).
+
+    Pipeline overview (per run)
+    ---------------------------
+    1. **Training** — calls :func:`training` with the (optionally undersampled)
+       training dataset.  The best model checkpoint is saved to
+       ``<experiment_root>/run_<N>/checkpoints/``.
+    2. **Calibration** (when ``-calibrated True``) — calls :func:`evaluating`
+       on the validation set, searches for the optimal decision threshold over
+       ``-calibration_range`` at the given ``-budget``, and writes the selected
+       threshold to a JSON file inside ``run_<N>/``.
+    3. **Testing** — calls :func:`evaluating` on the test set with the
+       calibrated threshold (or a fixed 0.5 when calibration is disabled) and
+       records all evaluation metrics.
+
+    After all runs complete, per-budget average metrics are computed and the
+    full summary table is written to ``<experiment_root>/<slug>_test_all_*.csv``.
+    If ``-hf_upload_result True`` is set, the entire experiment directory is
+    pushed to the specified Hugging Face dataset repository.
+
+    Parameters
+    ----------
+    params : argparse.Namespace
+        Parsed CLI arguments.  See the **Argument reference** section in
+        ``README.md`` for the full list.
+
+    Raises
+    ------
+    ValueError
+        If required arguments are missing (e.g. ``-val_set`` when calibration
+        is enabled and no ``-hf_repo_id`` is provided, or
+        ``-dictionary`` for models that need one).
+    FileNotFoundError
+        If the threshold JSON file is not produced after calibration.
+    """
     hf_repo_id = getattr(params, "hf_repo_id", None)
     if params.model not in _NO_DICT_MODELS and params.dictionary is None and hf_repo_id is None:
         raise ValueError(
