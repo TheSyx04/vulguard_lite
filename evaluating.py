@@ -1,12 +1,14 @@
 import os
 import json
 import shutil
+
+import numpy as np
+import pandas as pd
+
 from .models.init_model import init_model
-from .utils.utils import SRC_PATH, create_dg_cache
+from .utils.utils import create_dg_cache
 from .utils.hf_dataset import prepare_hf_dataset_paths
 from .utils.metrics import get_metrics
-import pandas as pd
-import numpy as np
 
 
 def _compute_ratios(result_df, threshold):
@@ -173,17 +175,7 @@ def evaluating(params):
         shutil.copy2(score_file, score_run_file)
         print(f"Predict scores saved to: {score_file}")
         print(f"Predict scores saved to: {score_run_file}")
-    
-    # size_df_path = f'{dg_cache_path}/dataset/{params.repo_name}/data/test_Kamei_features_{params.repo_name}.jsonl' if params.size_set is None else params.size_set
-    # size_df = pd.read_json(size_df_path, orient="records", lines=True)
-    # if not (
-    #     'commit_id' in size_df.columns and
-    #     'commit_id' in result_df.columns and
-    #     np.array_equal(size_df["commit_id"].values, result_df["commit_id"].values)
-    # ):
-    #     size_df_path = None
-    
-        # metrics_df = get_metrics(result_df, model.model_name, size_df_path)
+
         metrics_df = get_metrics(result_df, model.model_name, None)
         metrics_file = f'{result_path}/{model.model_name}.csv'
         metrics_run_file = f'{result_path}/{model.model_name}_run_{run_idx}.csv'
