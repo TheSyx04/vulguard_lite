@@ -1,4 +1,4 @@
-﻿# VulGuard Lite
+# VulGuard Lite
 
 A lightweight toolkit for **Just-in-Time Vulnerability Prediction (JIT-VP)** —
 training, evaluating, and running full experiments with effort-aware threshold
@@ -103,13 +103,13 @@ python -m vulguard_lite experiment \
 
 ```bash
 python -m vulguard_lite experiment \
-  -repo_name   linux \
+  -repo_name   openssl \
   -repo_language C \
   -model       jitfine \
   -device      cuda \
   -dg_save_folder ./output \
   -hf_repo_id  TheSyx/vulguard_lite \
-  -hf_split_path linux/linux_3_1 \
+  -hf_split_path dataset/openssl/openssl_3_1 \
   -epochs      50 \
   -runs        5 \
   -sampling    True \
@@ -122,12 +122,12 @@ python -m vulguard_lite experiment \
 
 ```bash
 python -m vulguard_lite experiment \
-  -repo_name   linux \
+  -repo_name   openssl \
   -repo_language C \
   -model       deepjit \
   -device      cuda \
   -hf_repo_id  TheSyx/vulguard_lite \
-  -hf_split_path linux/linux_3_1 \
+  -hf_split_path dataset/openssl/openssl_3_1 \
   -runs        5 \
   -epochs      30 \
   -budget      0.1 0.2 \
@@ -346,6 +346,12 @@ All dataset files are in **JSONL** format (one JSON object per line).
 
 Files are downloaded once and cached at `<dg_save_folder>/dg_cache/dataset/<repo_name>/hf/`.
 
+> **Note on HF path structure:** For repositories stored under a subdirectory prefix in the
+> HF dataset (e.g. openssl data at `dataset/openssl/openssl_3_1/`), pass the full
+> sub-directory path as `-hf_split_path`: `-hf_split_path dataset/openssl/openssl_3_1`.
+> For repositories stored at the root level (e.g. linux at `linux/linux_3_1/`), use the
+> shorter form: `-hf_split_path linux/linux_3_1`.
+
 ### Undersampling cache
 
 When `-sampling True`, balanced subsets are written to:
@@ -390,4 +396,8 @@ For multi-file models (JITFine, SimCom), all paired files contain **exactly the 
 
 `<slug>` = `<model>_<repo_name>_<split_tag>_<sampling_tag>`
 
-Example: `lapredict_linux_linux_3_1_sampling`
+Example: `lapredict_openssl_openssl_3_1_sampling`
+
+> **Results upload path:** When `-hf_upload_result True`, results are pushed to
+> `output/<repo_name>/<model>/<sampling_tag>/<slug>` in the HF dataset repo.
+> Override with `-hf_output_folder` if a custom path is needed.
