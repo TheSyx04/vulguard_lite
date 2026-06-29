@@ -49,8 +49,6 @@ def convert_examples_to_features(item, pad_token=0, mask_padding_with_zero=True)
     # Use regular expression to extract both parts
     match = re.match(r"<ADD>(.*) <REMOVE>(.*)", files)
 
-    added_part = ""
-    removed_part = ""
     if match:
         added_part = match.group(1).encode('utf-8', 'ignore').decode('utf-8')
         removed_part = match.group(2).encode('utf-8', 'ignore').decode('utf-8')

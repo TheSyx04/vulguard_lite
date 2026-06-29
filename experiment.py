@@ -18,6 +18,26 @@ Public entry point
         an *experiment root* directory and, optionally, uploaded to a Hugging
         Face dataset repository.
 
+Multi-seed mode
+---------------
+    When ``-sampling_seeds`` is supplied (a list of seeds), the experiment is
+    repeated for each seed.  Every seed independently runs ``-runs`` times,
+    so the total number of runs is ``len(sampling_seeds) × runs``.  The seed
+    used for each run is recorded in the per-run metric rows (``seed`` column)
+    and is included in the timing log.
+
+Timing log
+----------
+    A ``<slug>_timing.log`` file is written inside the experiment root after all
+    runs complete.  For each run it records:
+
+    * Training time (seconds)
+    * Calibration time per budget (seconds)
+    * Total time for that run (seconds)
+
+    The log is also pushed to Hugging Face together with the CSV results when
+    ``-hf_upload_result True`` is set.
+
 Directory layout produced
 -------------------------
     <dg_save_folder>/dg_cache/save/<repo_name>/experiments/<slug>/
@@ -32,13 +52,16 @@ Directory layout produced
         run_2/ …
         <slug>_test_all_run.csv               ← single-budget final table
         <slug>_test_all_budget.csv            ← multi-budget final table
+        <slug>_timing.log                     ← per-run timing log
 
 where ``<slug>`` is ``<model>_<repo>_<split>_<sampling_tag>``.
 """
 
 import json
+import logging
 import os
 import shutil
+import time
 from argparse import Namespace
 
 import pandas as pd
@@ -165,7 +188,7 @@ def _hf_output_path(params):
     return f"output/{params.repo_name}/{params.model}/{_sampling_tag(params)}/{_experiment_slug(params)}"
 
 
-def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload):
+def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload, seed=None):
     """Read a per-run metrics CSV and attach run-level metadata columns.
 
     Parameters
@@ -175,7 +198,7 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
     model_name : str
         Name of the model (written into the ``"model"`` column).
     run_idx : int
-        1-based run index.
+        1-based (global) run index.
     budget : float
         Inspection budget for this calibration sweep (0–1).
     threshold : float
@@ -183,6 +206,9 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
     threshold_payload : dict | None
         Full threshold selection payload written by calibration, or ``None``
         when calibration was skipped.
+    seed : int | None
+        Undersampling seed used for this run (``None`` when not in multi-seed
+        mode or when undersampling is disabled).
 
     Returns
     -------
@@ -200,6 +226,8 @@ def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, th
             "threshold": float(threshold),
         }
     )
+    if seed is not None:
+        metrics_row["seed"] = int(seed)
 
     return metrics_row
 
@@ -234,6 +262,72 @@ def _resolve_hyperparameters(params):
     return f"{SRC_PATH}/models/{params.model}/hyperparameters.json"
 
 
+def _setup_timing_logger(log_path):
+    """Create a dedicated file logger for timing information.
+
+    Returns a :class:`logging.Logger` that writes plain-text records to
+    *log_path*.  A new file is created (or truncated) at the start of each
+    experiment so that re-runs produce a fresh log.
+
+    Parameters
+    ----------
+    log_path : str
+        Absolute path to the ``.log`` file.
+
+    Returns
+    -------
+    logging.Logger
+    """
+    logger = logging.getLogger(f"vulguard_timing_{log_path}")
+    logger.setLevel(logging.DEBUG)
+    # Avoid duplicate handlers when the function is called multiple times.
+    if logger.handlers:
+        logger.handlers.clear()
+    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    logger.addHandler(fh)
+    return logger
+
+
+def _fmt_duration(seconds):
+    """Format *seconds* as a human-readable ``Xh Ym Zs`` string."""
+    seconds = int(seconds)
+    h, remainder = divmod(seconds, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _normalize_sampling_seeds(params):
+    """Return the list of undersampling seeds to iterate over.
+
+    Resolution order:
+
+    1. ``-sampling_seeds`` (multi-seed mode) — returned as-is.
+    2. ``-sampling_seed``  (single fixed seed) — wrapped in a list.
+    3. Neither set — returns ``[None]`` (one iteration; seed comes from
+       ``-seed`` inside the run loop, matching the original behaviour).
+
+    Parameters
+    ----------
+    params : argparse.Namespace
+
+    Returns
+    -------
+    list[int | None]
+    """
+    multi = getattr(params, "sampling_seeds", None)
+    if multi:
+        return list(multi)
+    single = getattr(params, "sampling_seed", None)
+    if single is not None:
+        return [single]
+    return [None]
+
+
 def run_experiment(params):
     """Run the full train → calibrate → test pipeline for one model / split.
 
@@ -253,10 +347,16 @@ def run_experiment(params):
        calibrated threshold (or a fixed 0.5 when calibration is disabled) and
        records all evaluation metrics.
 
-    After all runs complete, per-budget average metrics are computed and the
-    full summary table is written to ``<experiment_root>/<slug>_test_all_*.csv``.
-    If ``-hf_upload_result True`` is set, the entire experiment directory is
-    pushed to the specified Hugging Face dataset repository.
+    After all runs complete, per-budget average metrics are computed across
+    **all** runs (all seeds × runs per seed) and the full summary table is
+    written to ``<experiment_root>/<slug>_test_all_*.csv``.
+
+    Timing information (training time, calibration time, total time per run) is
+    written to ``<experiment_root>/<slug>_timing.log``.
+
+    If ``-hf_upload_result True`` is set, the entire experiment directory
+    (including the timing log) is pushed to the specified Hugging Face dataset
+    repository.
 
     Parameters
     ----------
@@ -299,171 +399,269 @@ def run_experiment(params):
     if params.test_set is None and hf_repo_id is None:
         raise ValueError("-test_set is required for experiment mode to run final test.")
 
-    base_sampling_seed = getattr(params, "sampling_seed", None)
     base_checkpoint_dir = getattr(params, "checkpoint_dir", None)
     base_seed = getattr(params, "seed", 42)
-    total_runs = params.runs
-    all_test_metrics = []
+    runs_per_seed = params.runs
     budgets = _normalize_budgets(getattr(params, "budget", [1]))
 
-    for run_idx in range(1, total_runs + 1):
-        print(f"================ Experiment Run {run_idx}/{total_runs} ================")
-        # Reset random state per run so repeated runs are directly comparable.
-        seed_everything(base_seed)
-        run_dir = f"{experiment_root}/run_{run_idx}"
-        os.makedirs(run_dir, exist_ok=True)
-        model_name = params.model
-        # Sklearn models (lapredict, lr) save via pickle and have no checkpoint concept.
-        if model_name not in _SKLEARN_MODELS:
-            run_checkpoint_dir = (
-                f"{base_checkpoint_dir}/run_{run_idx}"
-                if base_checkpoint_dir
-                else f"{run_dir}/checkpoints"
+    # Determine the list of undersampling seeds (multi-seed or single/none).
+    sampling_seeds = _normalize_sampling_seeds(params)
+    multi_seed_mode = len(sampling_seeds) > 1 or (
+        len(sampling_seeds) == 1 and sampling_seeds[0] is not None
+    )
+    total_runs = len(sampling_seeds) * runs_per_seed
+
+    # ------------------------------------------------------------------
+    # Set up timing log
+    # ------------------------------------------------------------------
+    timing_log_path = f"{experiment_root}/{experiment_slug}_timing.log"
+    timing_logger = _setup_timing_logger(timing_log_path)
+    timing_logger.info("=" * 70)
+    timing_logger.info(f"Experiment : {experiment_slug}")
+    timing_logger.info(f"Model      : {params.model}")
+    timing_logger.info(f"Seeds      : {sampling_seeds}")
+    timing_logger.info(f"Runs/seed  : {runs_per_seed}")
+    timing_logger.info(f"Total runs : {total_runs}")
+    timing_logger.info(f"Budgets    : {budgets}")
+    timing_logger.info("=" * 70)
+
+    all_test_metrics = []
+    global_run_idx = 0  # monotonically increasing counter across all seeds
+
+    for seed_iter_idx, current_sampling_seed in enumerate(sampling_seeds, start=1):
+        seed_label = str(current_sampling_seed) if current_sampling_seed is not None else "default"
+        if multi_seed_mode:
+            print(f"\n{'='*16} Seed {seed_iter_idx}/{len(sampling_seeds)}: sampling_seed={seed_label} {'='*16}")
+            timing_logger.info(f"--- Seed {seed_iter_idx}/{len(sampling_seeds)}: sampling_seed={seed_label} ---")
+
+        for run_idx in range(1, runs_per_seed + 1):
+            global_run_idx += 1
+            run_overall_start = time.perf_counter()
+
+            print(
+                f"================ Experiment Run {global_run_idx}/{total_runs} "
+                f"(seed={seed_label}, run {run_idx}/{runs_per_seed}) ================"
             )
-            os.makedirs(run_checkpoint_dir, exist_ok=True)
-        else:
-            run_checkpoint_dir = None
+            timing_logger.info(
+                f"Run {global_run_idx}/{total_runs}  seed={seed_label}  run_within_seed={run_idx}/{runs_per_seed}"
+            )
 
-        run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"
-        if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
-            print(f"Run {run_idx} already completed. Skip this run: {run_test_metric_file}")
-            test_metrics_df = pd.read_csv(run_test_metric_file)
-            all_test_metrics.append(test_metrics_df)
-            continue
+            # Reset random state per run so repeated runs are directly comparable.
+            seed_everything(base_seed)
 
-        # Keep the same sampling seed across runs for reproducible undersampling.
-        run_sampling_seed = base_seed if base_sampling_seed is None else base_sampling_seed
+            # Use a composite directory name that encodes both seed and run when
+            # in multi-seed mode so directories never collide.
+            if multi_seed_mode:
+                run_dir = f"{experiment_root}/seed_{seed_label}_run_{run_idx}"
+            else:
+                run_dir = f"{experiment_root}/run_{run_idx}"
+            os.makedirs(run_dir, exist_ok=True)
 
-        train_params = _clone_params(
-            params,
-            {
-                "model_path": None,
-                "sampling_run_id": run_idx,
-                "sampling_seed": run_sampling_seed,
-                "checkpoint_dir": run_checkpoint_dir,
-                # Propagate the pre-resolved hyperparameters path.
-                "hyperparameters": params.hyperparameters,
-            },
-        )
-        print("[1/3] Training...")
-        training(train_params)
+            model_name = params.model
+            # Sklearn models (lapredict, lr) save via pickle and have no checkpoint concept.
+            if model_name not in _SKLEARN_MODELS:
+                run_checkpoint_dir = (
+                    f"{base_checkpoint_dir}/run_{global_run_idx}"
+                    if base_checkpoint_dir
+                    else f"{run_dir}/checkpoints"
+                )
+                os.makedirs(run_checkpoint_dir, exist_ok=True)
+            else:
+                run_checkpoint_dir = None
 
-        run_rows = []
-        for budget_idx, budget in enumerate(budgets, start=1):
-            budget_label = _budget_tag(budget)
-            print(f"[2/3] Budget {budget_idx}/{len(budgets)}: calibration with budget={budget}")
+            run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"
+            if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
+                print(f"Run {global_run_idx} already completed. Skip this run: {run_test_metric_file}")
+                test_metrics_df = pd.read_csv(run_test_metric_file)
+                all_test_metrics.append(test_metrics_df)
+                timing_logger.info(f"  -> Skipped (already completed): {run_test_metric_file}")
+                continue
 
-            if use_calibration:
-                val_eval_params = _clone_params(
+            # ------------------------------------------------------------------
+            # Phase 1: Training
+            # ------------------------------------------------------------------
+            train_params = _clone_params(
+                params,
+                {
+                    "model_path": None,
+                    "sampling_run_id": run_idx,
+                    "sampling_seed": current_sampling_seed if current_sampling_seed is not None else base_seed,
+                    "checkpoint_dir": run_checkpoint_dir,
+                    # Propagate the pre-resolved hyperparameters path.
+                    "hyperparameters": params.hyperparameters,
+                },
+            )
+            print("[1/3] Training...")
+            train_start = time.perf_counter()
+            training(train_params)
+            train_elapsed = time.perf_counter() - train_start
+            timing_logger.info(
+                f"  [1/3] Training time      : {_fmt_duration(train_elapsed)} ({train_elapsed:.2f}s)"
+            )
+
+            # ------------------------------------------------------------------
+            # Phase 2 & 3: Calibration + Test (per budget)
+            # ------------------------------------------------------------------
+            run_rows = []
+            total_calib_elapsed = 0.0
+            total_test_elapsed = 0.0
+
+            for budget_idx, budget in enumerate(budgets, start=1):
+                budget_label = _budget_tag(budget)
+                print(f"[2/3] Budget {budget_idx}/{len(budgets)}: calibration with budget={budget}")
+
+                if use_calibration:
+                    calib_start = time.perf_counter()
+                    val_eval_params = _clone_params(
+                        params,
+                        {
+                            "test_set": params.val_set,
+                            "calibrated": True,
+                            "budget": float(budget),
+                            "runs": 1,
+                        },
+                    )
+                    evaluating(val_eval_params)
+                    calib_elapsed = time.perf_counter() - calib_start
+                    total_calib_elapsed += calib_elapsed
+
+                    selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
+                    if not os.path.exists(selected_threshold_file):
+                        raise FileNotFoundError(
+                            f"Selected threshold file not found: {selected_threshold_file}. "
+                            "Ensure validation evaluating ran with calibration enabled."
+                        )
+
+                    with open(selected_threshold_file, "r", encoding="utf-8") as f:
+                        threshold_payload = json.load(f)
+                    selected_threshold = float(threshold_payload["threshold"])
+                    print(f"Selected threshold for run {global_run_idx}, budget {budget}: {selected_threshold}")
+                    timing_logger.info(
+                        f"  [2/3] Calibration (budget={budget}): "
+                        f"{_fmt_duration(calib_elapsed)} ({calib_elapsed:.2f}s)"
+                        f" | threshold={selected_threshold}"
+                    )
+
+                    val_score_file = f"{predict_score_path}/{model_name}.csv"
+                    val_metrics_file = f"{result_path}/{model_name}.csv"
+                    val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
+
+                    if os.path.exists(val_score_file):
+                        shutil.copy2(val_score_file, f"{run_dir}/{model_name}_{budget_label}_val_scores.csv")
+                    if os.path.exists(val_metrics_file):
+                        shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_{budget_label}_val_metrics.csv")
+                    if os.path.exists(val_calibration_file):
+                        shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_{budget_label}_val_threshold_calibration.csv")
+                    shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json")
+
+                    _safe_remove(f"{predict_score_path}/{model_name}.csv")
+                    _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
+                    _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
+                    _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
+                    _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
+                    _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
+                    _safe_remove(f"{result_path}/{model_name}.csv")
+                    _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+                    print("[3/3] Final test evaluating with fixed threshold...")
+                else:
+                    selected_threshold = 0.5 if params.threshold is None else float(params.threshold)
+                    threshold_payload = {
+                        "threshold": selected_threshold,
+                        "source": "fixed",
+                        "run": int(global_run_idx),
+                        "budget": float(budget),
+                    }
+                    print(f"[2/2] Skip calibration, use fixed threshold: {selected_threshold}")
+                    with open(f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json", "w", encoding="utf-8") as f:
+                        json.dump(threshold_payload, f, indent=2)
+
+                # Phase 3: Test
+                test_start = time.perf_counter()
+                test_eval_params = _clone_params(
                     params,
                     {
-                        "test_set": params.val_set,
-                        "calibrated": True,
+                        "test_set": params.test_set,
+                        "calibrated": False,
                         "budget": float(budget),
+                        "threshold": selected_threshold,
                         "runs": 1,
                     },
                 )
-                evaluating(val_eval_params)
+                evaluating(test_eval_params)
+                test_elapsed = time.perf_counter() - test_start
+                total_test_elapsed += test_elapsed
+                timing_logger.info(
+                    f"  [3/3] Testing  (budget={budget}): "
+                    f"{_fmt_duration(test_elapsed)} ({test_elapsed:.2f}s)"
+                )
 
-                selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
-                if not os.path.exists(selected_threshold_file):
-                    raise FileNotFoundError(
-                        f"Selected threshold file not found: {selected_threshold_file}. "
-                        "Ensure validation evaluating ran with calibration enabled."
+                test_score_file = f"{predict_score_path}/{model_name}.csv"
+                test_metrics_file = f"{result_path}/{model_name}.csv"
+                if os.path.exists(test_score_file):
+                    shutil.copy2(test_score_file, f"{run_dir}/{model_name}_{budget_label}_test_scores.csv")
+                if os.path.exists(test_metrics_file):
+                    shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_{budget_label}_test_metrics.csv")
+                    run_rows.append(
+                        _collect_metric_row(
+                            test_metrics_file,
+                            model_name,
+                            global_run_idx,
+                            budget,
+                            selected_threshold,
+                            threshold_payload if use_calibration else None,
+                            seed=current_sampling_seed,
+                        )
                     )
-
-                with open(selected_threshold_file, "r", encoding="utf-8") as f:
-                    threshold_payload = json.load(f)
-                selected_threshold = float(threshold_payload["threshold"])
-                print(f"Selected threshold for run {run_idx}, budget {budget}: {selected_threshold}")
-
-                val_score_file = f"{predict_score_path}/{model_name}.csv"
-                val_metrics_file = f"{result_path}/{model_name}.csv"
-                val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
-
-                if os.path.exists(val_score_file):
-                    shutil.copy2(val_score_file, f"{run_dir}/{model_name}_{budget_label}_val_scores.csv")
-                if os.path.exists(val_metrics_file):
-                    shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_{budget_label}_val_metrics.csv")
-                if os.path.exists(val_calibration_file):
-                    shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_{budget_label}_val_threshold_calibration.csv")
-                shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json")
 
                 _safe_remove(f"{predict_score_path}/{model_name}.csv")
                 _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
-                _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
-                _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
-                _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
-                _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
                 _safe_remove(f"{result_path}/{model_name}.csv")
                 _safe_remove(f"{result_path}/{model_name}_run_1.csv")
-                print("[3/3] Final test evaluating with fixed threshold...")
-            else:
-                selected_threshold = 0.5 if params.threshold is None else float(params.threshold)
-                threshold_payload = {
-                    "threshold": selected_threshold,
-                    "source": "fixed",
-                    "run": int(run_idx),
-                    "budget": float(budget),
-                }
-                print(f"[2/2] Skip calibration, use fixed threshold: {selected_threshold}")
-                with open(f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json", "w", encoding="utf-8") as f:
-                    json.dump(threshold_payload, f, indent=2)
 
-            test_eval_params = _clone_params(
-                params,
-                {
-                    "test_set": params.test_set,
-                    "calibrated": False,
-                    "budget": float(budget),
-                    "threshold": selected_threshold,
-                    "runs": 1,
-                },
+            if run_rows:
+                run_summary_df = pd.DataFrame(run_rows)
+                run_summary_df.to_csv(run_test_metric_file, index=False)
+                all_test_metrics.append(run_summary_df)
+
+            run_overall_elapsed = time.perf_counter() - run_overall_start
+            timing_logger.info(
+                f"  Total run time           : {_fmt_duration(run_overall_elapsed)} ({run_overall_elapsed:.2f}s)"
             )
-            evaluating(test_eval_params)
-
-            test_score_file = f"{predict_score_path}/{model_name}.csv"
-            test_metrics_file = f"{result_path}/{model_name}.csv"
-            if os.path.exists(test_score_file):
-                shutil.copy2(test_score_file, f"{run_dir}/{model_name}_{budget_label}_test_scores.csv")
-            if os.path.exists(test_metrics_file):
-                shutil.copy2(test_metrics_file, f"{run_dir}/{model_name}_{budget_label}_test_metrics.csv")
-                run_rows.append(
-                    _collect_metric_row(
-                        test_metrics_file,
-                        model_name,
-                        run_idx,
-                        budget,
-                        selected_threshold,
-                        threshold_payload if use_calibration else None,
-                    )
+            timing_logger.info(
+                f"    Training               : {_fmt_duration(train_elapsed)} ({train_elapsed:.2f}s)"
+            )
+            if use_calibration:
+                timing_logger.info(
+                    f"    Calibration (all budgets): {_fmt_duration(total_calib_elapsed)} ({total_calib_elapsed:.2f}s)"
                 )
+            timing_logger.info(
+                f"    Testing (all budgets)  : {_fmt_duration(total_test_elapsed)} ({total_test_elapsed:.2f}s)"
+            )
+            timing_logger.info("")
 
-            _safe_remove(f"{predict_score_path}/{model_name}.csv")
-            _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
-            _safe_remove(f"{result_path}/{model_name}.csv")
-            _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+            print(f"Run {global_run_idx} artifacts saved to: {run_dir}")
 
-        if run_rows:
-            run_summary_df = pd.DataFrame(run_rows)
-            run_summary_df.to_csv(run_test_metric_file, index=False)
-            all_test_metrics.append(run_summary_df)
-
-        print(f"Run {run_idx} artifacts saved to: {run_dir}")
-
+    # -----------------------------------------------------------------------
+    # Aggregate results across ALL runs (all seeds × runs_per_seed)
+    # -----------------------------------------------------------------------
     if all_test_metrics:
         combined_test_metrics = pd.concat(all_test_metrics, ignore_index=True)
-        combined_test_metrics = combined_test_metrics.sort_values(["budget", "run"], kind="stable")
 
+        sort_cols = ["budget", "seed", "run"] if "seed" in combined_test_metrics.columns else ["budget", "run"]
+        combined_test_metrics = combined_test_metrics.sort_values(sort_cols, kind="stable")
+
+        # Exclude non-numeric and metadata columns from the average computation.
         metric_columns = [
             column
             for column in combined_test_metrics.columns
-            if column not in {"model", "run", "budget"} and pd.api.types.is_numeric_dtype(combined_test_metrics[column])
+            if column not in {"model", "run", "budget", "seed"}
+            and pd.api.types.is_numeric_dtype(combined_test_metrics[column])
         ]
 
         summary_frames = []
         for budget in sorted(combined_test_metrics["budget"].dropna().unique()):
             budget_frame = combined_test_metrics[combined_test_metrics["budget"] == budget].copy()
+            # Average row aggregates across ALL runs for this budget.
             average_row = {"model": "average", "run": "average", "budget": float(budget)}
             for column in metric_columns:
                 average_row[column] = budget_frame[column].mean()
@@ -477,6 +675,12 @@ def run_experiment(params):
             output_name = f"{experiment_slug}_test_all_budget.csv"
         final_summary_path = f"{experiment_root}/{output_name}"
         final_summary.to_csv(final_summary_path, index=False)
+
+        # Log overall summary.
+        timing_logger.info("=" * 70)
+        timing_logger.info(f"Summary CSV written to: {final_summary_path}")
+        timing_logger.info(f"Total runs completed  : {global_run_idx}")
+        timing_logger.info("=" * 70)
 
         if getattr(params, "hf_upload_result", False):
             output_repo_id = getattr(params, "hf_output_repo_id", None) or hf_repo_id
