@@ -14,7 +14,7 @@ from .dataset import TextDataset
 from sklearn.metrics import precision_recall_curve, auc
 
 def get_auc(ground_truth, predict):
-    precisions, recalls, _ = precision_recall_curve(y_true=ground_truth, y_score=predict)
+    precisions, recalls, _ = precision_recall_curve(y_true=ground_truth, probas_pred=predict)
     pr_auc = auc(recalls, precisions)
     
     return pr_auc
