@@ -25,7 +25,7 @@ def eval_metrics(result_df, model, columns):
     
     # find AUC
     roc_auc = roc_auc_score(y_true=y_test, y_score=y_proba)
-    precisions, recalls, _ = precision_recall_curve(y_true=y_test, probas_pred=y_proba)
+    precisions, recalls, _ = precision_recall_curve(y_true=y_test, y_score=y_proba)
     pr_auc = auc(recalls, precisions)
 
     # find metrics
