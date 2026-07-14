@@ -68,6 +68,7 @@ import pandas as pd
 
 from .evaluating import evaluating
 from .training import training
+from .utils.metrics import get_metrics
 from .utils.hf_upload import upload_folder_to_hf_dataset
 from .utils.utils import create_dg_cache
 from .utils.reproducibility import seed_everything
@@ -328,6 +329,38 @@ def _normalize_sampling_seeds(params):
     return [None]
 
 
+def _select_threshold_from_calibration_df(calibration_df, budget):
+    """Select the best threshold for *budget* from a precomputed calibration table.
+
+    The ranking logic matches ``evaluating._select_calibrated_threshold``:
+
+    - Prefer thresholds with ``marked_function_ratio <= budget``.
+    - Within feasible rows: maximize ``vuln_detection_ratio``, then minimize
+      ``marked_function_ratio``, then maximize ``threshold``.
+    - If no feasible rows exist: minimize ``marked_function_ratio``, then
+      maximize ``vuln_detection_ratio``, then maximize ``threshold``.
+    """
+    feasible = calibration_df[calibration_df["marked_function_ratio"] <= budget].copy()
+
+    if len(feasible) > 0:
+        best = feasible.sort_values(
+            ["vuln_detection_ratio", "marked_function_ratio", "threshold"],
+            ascending=[False, True, False],
+        ).iloc[0]
+    else:
+        best = calibration_df.sort_values(
+            ["marked_function_ratio", "vuln_detection_ratio", "threshold"],
+            ascending=[True, False, False],
+        ).iloc[0]
+
+    return {
+        "threshold": float(best["threshold"]),
+        "vuln_detection_ratio": float(best["vuln_detection_ratio"]),
+        "marked_function_ratio": float(best["marked_function_ratio"]),
+        "budget": float(budget),
+    }
+
+
 def run_experiment(params):
     """Run the full train → calibrate → test pipeline for one model / split.
 
@@ -506,62 +539,104 @@ def run_experiment(params):
             total_calib_elapsed = 0.0
             total_test_elapsed = 0.0
 
+            calibration_df = None
+            val_scores_df = None
+            calibration_meta = None
+
+            if use_calibration:
+                print(f"[2/3] Calibration inference on validation set (once for {len(budgets)} budgets)...")
+                calib_start = time.perf_counter()
+                val_eval_params = _clone_params(
+                    params,
+                    {
+                        "test_set": params.val_set,
+                        "calibrated": True,
+                        # Use one budget to trigger calibration artifact creation.
+                        # Per-budget thresholds are selected from the same table below.
+                        "budget": float(budgets[0]),
+                        "runs": 1,
+                    },
+                )
+                evaluating(val_eval_params)
+                calib_elapsed = time.perf_counter() - calib_start
+                total_calib_elapsed += calib_elapsed
+
+                selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
+                val_score_file = f"{predict_score_path}/{model_name}.csv"
+                val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
+
+                if not os.path.exists(selected_threshold_file):
+                    raise FileNotFoundError(
+                        f"Selected threshold file not found: {selected_threshold_file}. "
+                        "Ensure validation evaluating ran with calibration enabled."
+                    )
+                if not os.path.exists(val_calibration_file):
+                    raise FileNotFoundError(
+                        f"Calibration table not found: {val_calibration_file}. "
+                        "Ensure validation evaluating produced threshold calibration output."
+                    )
+                if not os.path.exists(val_score_file):
+                    raise FileNotFoundError(
+                        f"Validation score file not found: {val_score_file}. "
+                        "Ensure validation evaluating produced predict scores."
+                    )
+
+                with open(selected_threshold_file, "r", encoding="utf-8") as f:
+                    selected_threshold_payload = json.load(f)
+
+                calibration_meta = {
+                    "run": int(global_run_idx),
+                    "calibration_range": selected_threshold_payload.get("calibration_range"),
+                }
+
+                calibration_df = pd.read_csv(val_calibration_file)
+                val_scores_df = pd.read_csv(val_score_file)
+
+                timing_logger.info(
+                    f"  [2/3] Calibration inference : {_fmt_duration(calib_elapsed)} ({calib_elapsed:.2f}s)"
+                )
+
             for budget_idx, budget in enumerate(budgets, start=1):
                 budget_label = _budget_tag(budget)
-                print(f"[2/3] Budget {budget_idx}/{len(budgets)}: calibration with budget={budget}")
+                print(f"[2/3] Budget {budget_idx}/{len(budgets)}: threshold selection with budget={budget}")
 
                 if use_calibration:
-                    calib_start = time.perf_counter()
-                    val_eval_params = _clone_params(
-                        params,
-                        {
-                            "test_set": params.val_set,
-                            "calibrated": True,
-                            "budget": float(budget),
-                            "runs": 1,
-                        },
-                    )
-                    evaluating(val_eval_params)
-                    calib_elapsed = time.perf_counter() - calib_start
-                    total_calib_elapsed += calib_elapsed
-
-                    selected_threshold_file = f"{predict_score_path}/{model_name}_selected_threshold.json"
-                    if not os.path.exists(selected_threshold_file):
-                        raise FileNotFoundError(
-                            f"Selected threshold file not found: {selected_threshold_file}. "
-                            "Ensure validation evaluating ran with calibration enabled."
-                        )
-
-                    with open(selected_threshold_file, "r", encoding="utf-8") as f:
-                        threshold_payload = json.load(f)
+                    threshold_payload = _select_threshold_from_calibration_df(calibration_df, float(budget))
+                    if calibration_meta is not None:
+                        threshold_payload.update(calibration_meta)
                     selected_threshold = float(threshold_payload["threshold"])
                     print(f"Selected threshold for run {global_run_idx}, budget {budget}: {selected_threshold}")
                     timing_logger.info(
-                        f"  [2/3] Calibration (budget={budget}): "
-                        f"{_fmt_duration(calib_elapsed)} ({calib_elapsed:.2f}s)"
-                        f" | threshold={selected_threshold}"
+                        f"  [2/3] Threshold select (budget={budget}): threshold={selected_threshold}"
                     )
 
-                    val_score_file = f"{predict_score_path}/{model_name}.csv"
-                    val_metrics_file = f"{result_path}/{model_name}.csv"
-                    val_calibration_file = f"{predict_score_path}/{model_name}_threshold_calibration.csv"
+                    val_scores_budget_df = val_scores_df.copy()
+                    val_scores_budget_df["prediction"] = (
+                        val_scores_budget_df["probability"] > selected_threshold
+                    ).astype(float)
+                    val_scores_budget_df.to_csv(
+                        f"{run_dir}/{model_name}_{budget_label}_val_scores.csv",
+                        index=False,
+                        columns=["commit_id", "label", "prediction", "probability"],
+                    )
 
-                    if os.path.exists(val_score_file):
-                        shutil.copy2(val_score_file, f"{run_dir}/{model_name}_{budget_label}_val_scores.csv")
-                    if os.path.exists(val_metrics_file):
-                        shutil.copy2(val_metrics_file, f"{run_dir}/{model_name}_{budget_label}_val_metrics.csv")
-                    if os.path.exists(val_calibration_file):
-                        shutil.copy2(val_calibration_file, f"{run_dir}/{model_name}_{budget_label}_val_threshold_calibration.csv")
-                    shutil.copy2(selected_threshold_file, f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json")
+                    val_metrics_budget_df = get_metrics(val_scores_budget_df, model_name, None)
+                    val_metrics_budget_df.to_csv(
+                        f"{run_dir}/{model_name}_{budget_label}_val_metrics.csv",
+                        index=True,
+                    )
 
-                    _safe_remove(f"{predict_score_path}/{model_name}.csv")
-                    _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
-                    _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
-                    _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
-                    _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
-                    _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
-                    _safe_remove(f"{result_path}/{model_name}.csv")
-                    _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+                    calibration_df.to_csv(
+                        f"{run_dir}/{model_name}_{budget_label}_val_threshold_calibration.csv",
+                        index=False,
+                    )
+                    with open(
+                        f"{run_dir}/{model_name}_{budget_label}_selected_threshold.json",
+                        "w",
+                        encoding="utf-8",
+                    ) as f:
+                        json.dump(threshold_payload, f, indent=2)
+
                     print("[3/3] Final test evaluating with fixed threshold...")
                 else:
                     selected_threshold = 0.5 if params.threshold is None else float(params.threshold)
@@ -618,6 +693,16 @@ def run_experiment(params):
                 _safe_remove(f"{result_path}/{model_name}.csv")
                 _safe_remove(f"{result_path}/{model_name}_run_1.csv")
 
+            if use_calibration:
+                _safe_remove(f"{predict_score_path}/{model_name}.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_run_1.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_threshold_calibration_run_1.csv")
+                _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold.json")
+                _safe_remove(f"{predict_score_path}/{model_name}_selected_threshold_run_1.json")
+                _safe_remove(f"{result_path}/{model_name}.csv")
+                _safe_remove(f"{result_path}/{model_name}_run_1.csv")
+
             if run_rows:
                 run_summary_df = pd.DataFrame(run_rows)
                 run_summary_df.to_csv(run_test_metric_file, index=False)
@@ -632,7 +717,7 @@ def run_experiment(params):
             )
             if use_calibration:
                 timing_logger.info(
-                    f"    Calibration (all budgets): {_fmt_duration(total_calib_elapsed)} ({total_calib_elapsed:.2f}s)"
+                    f"    Calibration inference    : {_fmt_duration(total_calib_elapsed)} ({total_calib_elapsed:.2f}s)"
                 )
             timing_logger.info(
                 f"    Testing (all budgets)  : {_fmt_duration(total_test_elapsed)} ({total_test_elapsed:.2f}s)"
