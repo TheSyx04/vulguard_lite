@@ -195,7 +195,4 @@ def training(params):
     print(f"Save {model.model_name}")
     save_last_path = f"{save_path}/models/last_epoch"
     model.save(save_path=save_last_path)
-    print(f"Model saved to: {save_path}")
-    
-
-    
+    print(f"Model saved to: {save_path}")

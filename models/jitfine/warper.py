@@ -178,8 +178,6 @@ class JITFine(BaseWraper):
         y_trues = y_trues if y_trues[0] is not None else None
         
         final_prediction = self.postprocess(commit_ids=commit_ids, outputs=logits, threshold=threshold, labels=y_trues)
-        # print(final_prediction)
-        # print(commit_ids)
         return final_prediction
         
     def train(self, train_df, val_df, **kwarg):

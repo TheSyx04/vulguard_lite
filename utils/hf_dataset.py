@@ -114,7 +114,19 @@ def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, r
     local_root = os.path.join(dg_cache_path, "dataset", repo_name, "hf", hf_repo_id.replace("/", "__"), revision)
 
     selection_prefix = f"{split_path.rstrip('/')}/" if split_path else f"{repo_name}/"
-    repo_prefix = f"{repo_name}/"
+
+    # Derive repo_prefix (used for test / dictionary files) from the split_path
+    # when available so that nested paths like "dataset/openssl/openssl_3_1" are
+    # handled correctly (repo_prefix = "dataset/openssl/").
+    if split_path:
+        _parts = split_path.rstrip("/").split("/")
+        if repo_name in _parts:
+            _idx = _parts.index(repo_name)
+            repo_prefix = "/".join(_parts[: _idx + 1]) + "/"
+        else:
+            repo_prefix = f"{repo_name}/"
+    else:
+        repo_prefix = f"{repo_name}/"
 
     NO_DICT_MODELS = {"tlel", "lapredict", "lr", "jitfine"}
     dictionary_remote = None if model_name in NO_DICT_MODELS else _pick_file(repo_files, repo_prefix, [f"dict_{repo_name}.jsonl"])

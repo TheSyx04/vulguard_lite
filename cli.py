@@ -54,6 +54,7 @@ def int_gte_0(value):
         raise argparse.ArgumentTypeError("Expected an integer >= 0")
     return parsed
 
+
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
@@ -197,7 +198,7 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'inferencing', 'experiment']:
+    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment']:
         print(f"Set seed: {options.seed}")
         seed_everything(options.seed)
         
