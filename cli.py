@@ -90,7 +90,7 @@ def main(args=None):
     training_parser.add_argument("-dictionary",type=str,default=None, help="Path to dictionary")
     training_parser.add_argument("-sampling", type=str2bool, default=False, help="Enable random undersampling on the training set (True/False)")
     training_parser.add_argument("-resume_from_checkpoint", type=str2bool, default=False, help="Resume training from the latest saved checkpoint in -checkpoint_dir (True/False)")
-    training_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Directory to store epoch checkpoints (default: <dg_cache>/save/<repo_name>/models/checkpoints)")
+    training_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Directory to store the latest checkpoint (default: <dg_cache>/save/<repo_name>/models/<model>_seed_<seed>/checkpoints)")
 
     evaluating_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     evaluating_parser.set_defaults(func=evaluating)
@@ -138,7 +138,7 @@ def main(args=None):
         ),
     )
     experiment_parser.add_argument("-resume_from_checkpoint", type=str2bool, default=False, help="Resume training from the latest saved checkpoint in -checkpoint_dir (True/False)")
-    experiment_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Directory to store epoch checkpoints (default: <dg_cache>/save/<repo_name>/models/checkpoints)")
+    experiment_parser.add_argument("-checkpoint_dir", type=str, default=None, help="Base directory for seed-scoped model artifacts; each seed uses <model>_seed_<seed>/checkpoints")
     experiment_parser.add_argument("-calibrated", type=str2bool, default=True, help="Enable validation threshold calibration in experiment mode (True/False)")
     experiment_parser.add_argument("-threshold", type=float, default=0.5, help="Initial threshold before calibration")
     experiment_parser.add_argument(
