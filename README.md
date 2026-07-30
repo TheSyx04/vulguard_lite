@@ -135,7 +135,9 @@ python -m vulguard_lite experiment \
 ```
 
 > If a run already has a metric file it is skipped entirely.
-> If training was interrupted mid-epoch, it resumes from the last saved checkpoint.
+> DeepJIT, JITFine, and SimCom resume from the last completed epoch. Checkpoints
+> and final model artifacts are isolated by sampling seed under
+> `models/<model>_seed_<seed>/`; per-epoch history is not retained.
 
 ---
 
@@ -151,8 +153,8 @@ python -m vulguard_lite training \
   -epochs      30
 ```
 
-The best model checkpoint is saved to
-`<dg_save_folder>/dg_cache/save/<repo_name>/models/best_epoch/`.
+The final model is saved to
+`<dg_save_folder>/dg_cache/save/<repo_name>/models/<model>_seed_<seed>/last_epoch/`.
 
 ---
 
@@ -252,7 +254,7 @@ All **common arguments** plus:
 | `-budget` | float(s) in [0,1] | `1` | no | Inspection budget(s) for calibration: fraction of commits an inspector can review. Accepts multiple values: `-budget 0.05 0.1 0.2`. |
 | `-calibration_range` | START END STEPS | `None` | no | Grid search range: three values `START END STEPS` (e.g. `-calibration_range 0 1 10001`). |
 | `-resume_from_checkpoint` | bool | `False` | no | Skip completed runs; resume training from the latest epoch checkpoint for interrupted runs. |
-| `-checkpoint_dir` | str | auto | no | Directory for epoch checkpoints. Defaults to `<experiment_root>/run_<N>/checkpoints/`. |
+| `-checkpoint_dir` | str | auto | no | Base directory for seed-scoped model artifacts. Each seed uses `<checkpoint_dir>/<model>_seed_<seed>/checkpoints/`, retaining only the latest checkpoint. |
 | `-hf_output_folder` | str | `None` | no | Custom remote folder inside the HF dataset repo for uploading results. Derived automatically when omitted. |
 
 ---
@@ -274,7 +276,7 @@ All **common arguments** plus:
 | `-dictionary` | str | `None` | no | Token dictionary path (required for `deepjit`, `simcom`). |
 | `-sampling` | bool | `False` | no | Enable random undersampling on the training set. |
 | `-resume_from_checkpoint` | bool | `False` | no | Resume training from the latest checkpoint. |
-| `-checkpoint_dir` | str | auto | no | Epoch checkpoint directory. |
+| `-checkpoint_dir` | str | auto | no | Latest-checkpoint directory. The default is `models/<model>_seed_<seed>/checkpoints/`. |
 
 ---
 
@@ -287,7 +289,7 @@ All **common arguments** plus:
 | `-model` | str | — | **yes** | Model to evaluate. |
 | `-device` | str | `cpu` | no | PyTorch device string. |
 | `-threshold` | float | `None` | no | Fixed decision threshold. |
-| `-model_path` | str | auto | no | Path to saved model weights. Defaults to `<dg_cache>/save/<repo_name>/models/best_epoch`. |
+| `-model_path` | str | auto | no | Path to saved model weights. Defaults to the seed-scoped `models/<model>_seed_<seed>/last_epoch/`. |
 | `-test_set` | str | `None` | no | Test (or validation) JSONL file(s). Resolved from HF when omitted. |
 | `-size_set` | str | `None` | no | JSONL file with `la` / `ld` columns per commit — required for Effort@20, Recall@20, and Popt metrics. |
 | `-hyperparameters` | str | auto | no | Path to hyperparameters JSON. |
@@ -376,9 +378,10 @@ For multi-file models (JITFine, SimCom), all paired files contain **exactly the 
     predict_scores/              <- raw prediction scores per phase
     results/                     <- metric CSVs per phase
     models/
-      best_epoch/                <- best model weights (used for test)
-      last_epoch/                <- model after the final epoch
-      checkpoints/               <- per-epoch checkpoints (deep learning)
+      <model>_seed_<seed>/
+        best_epoch/              <- best model weights
+        last_epoch/              <- final model used for inference/upload
+        checkpoints/             <- latest resume checkpoint only
     experiments/<slug>/
       run_1/
         <model>_<budget>_val_scores.csv

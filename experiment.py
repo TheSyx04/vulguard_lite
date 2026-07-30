@@ -67,7 +67,7 @@ from argparse import Namespace
 import pandas as pd
 
 from .evaluating import evaluating
-from .training import training
+from .training import model_seed_name, training
 from .utils.metrics import get_metrics
 from .utils.hf_upload import upload_folder_to_hf_dataset
 from .utils.utils import create_dg_cache
@@ -187,6 +187,33 @@ def _hf_output_path(params):
     if custom:
         return custom.strip("/")
     return f"output/{params.repo_name}/{params.model}/{_sampling_tag(params)}/{_experiment_slug(params)}"
+
+
+def _hf_model_config_path(params, seed):
+    """Return the seed-scoped remote path for inference-ready model weights."""
+    seed_label = "default" if seed is None else str(seed)
+    return f"model_config/{params.repo_name}/{params.model}/{_split_tag(params)}/seed_{seed_label}"
+
+
+def _upload_model_config(params, local_folder, seed):
+    """Upload one seed's final model artifact to the canonical dataset repo."""
+    if not getattr(params, "hf_upload_result", False):
+        return
+    if not os.path.isdir(local_folder):
+        raise FileNotFoundError(f"Model config folder not found: {local_folder}")
+
+    repo_id = "TheSyx/vulguard_lite"
+    remote_path = _hf_model_config_path(params, seed)
+    print(f"Uploading model config to Hugging Face: {repo_id}/{remote_path}")
+    upload_folder_to_hf_dataset(
+        local_folder=local_folder,
+        repo_id=repo_id,
+        path_in_repo=remote_path,
+        commit_message=(
+            f"Upload {params.model} model config for "
+            f"{params.repo_name}/{_split_tag(params)}/seed {seed}"
+        ),
+    )
 
 
 def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload, seed=None):
@@ -493,18 +520,28 @@ def run_experiment(params):
             model_name = params.model
             # Sklearn models (lapredict, lr) save via pickle and have no checkpoint concept.
             if model_name not in _SKLEARN_MODELS:
-                run_checkpoint_dir = (
-                    f"{base_checkpoint_dir}/run_{global_run_idx}"
-                    if base_checkpoint_dir
-                    else f"{run_dir}/checkpoints"
+                seed_model_dir = os.path.join(
+                    base_checkpoint_dir or f"{base_save_path}/models",
+                    model_seed_name(model_name, seed_label),
                 )
+                run_checkpoint_dir = os.path.join(seed_model_dir, "checkpoints")
                 os.makedirs(run_checkpoint_dir, exist_ok=True)
             else:
+                seed_model_dir = os.path.join(
+                    base_checkpoint_dir or f"{base_save_path}/models",
+                    model_seed_name(model_name, seed_label),
+                )
                 run_checkpoint_dir = None
 
             run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"
             if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
                 print(f"Run {global_run_idx} already completed. Skip this run: {run_test_metric_file}")
+                if run_idx == 1:
+                    _upload_model_config(
+                        params,
+                        os.path.join(seed_model_dir, "last_epoch"),
+                        current_sampling_seed if current_sampling_seed is not None else base_seed,
+                    )
                 test_metrics_df = pd.read_csv(run_test_metric_file)
                 all_test_metrics.append(test_metrics_df)
                 timing_logger.info(f"  -> Skipped (already completed): {run_test_metric_file}")
@@ -520,17 +557,25 @@ def run_experiment(params):
                     "sampling_run_id": run_idx,
                     "sampling_seed": current_sampling_seed if current_sampling_seed is not None else base_seed,
                     "checkpoint_dir": run_checkpoint_dir,
+                    "model_output_dir": seed_model_dir,
                     # Propagate the pre-resolved hyperparameters path.
                     "hyperparameters": params.hyperparameters,
                 },
             )
             print("[1/3] Training...")
             train_start = time.perf_counter()
-            training(train_params)
+            training_result = training(train_params)
             train_elapsed = time.perf_counter() - train_start
             timing_logger.info(
                 f"  [1/3] Training time      : {_fmt_duration(train_elapsed)} ({train_elapsed:.2f}s)"
             )
+            last_model_dir = training_result["last_model_dir"]
+            if run_idx == 1:
+                _upload_model_config(
+                    params,
+                    last_model_dir,
+                    current_sampling_seed if current_sampling_seed is not None else base_seed,
+                )
 
             # ------------------------------------------------------------------
             # Phase 2 & 3: Calibration + Test (per budget)
@@ -555,6 +600,7 @@ def run_experiment(params):
                         # Per-budget thresholds are selected from the same table below.
                         "budget": float(budgets[0]),
                         "runs": 1,
+                        "model_path": last_model_dir,
                     },
                 )
                 evaluating(val_eval_params)
@@ -660,6 +706,7 @@ def run_experiment(params):
                         "budget": float(budget),
                         "threshold": selected_threshold,
                         "runs": 1,
+                        "model_path": last_model_dir,
                     },
                 )
                 evaluating(test_eval_params)

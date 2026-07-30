@@ -10,6 +10,7 @@ class SimCom(BaseWraper):
         self.language = language
         self.device = device
         self.initialized = False
+        self.resumed_from_checkpoint = False
         
         self.sim = Sim(self.language)
         self.com = Com(self.language, self.device)
@@ -18,6 +19,10 @@ class SimCom(BaseWraper):
     def initialize(self, dictionary, hyperparameters, model_path=None, **kwarg):
         self.sim.initialize(model_path=model_path)
         self.com.initialize(dictionary=dictionary, hyperparameters=hyperparameters, model_path=model_path)
+        self.resumed_from_checkpoint = (
+            model_path is not None
+            and os.path.exists(os.path.join(model_path, "simcom_checkpoint_last.pth"))
+        )
         self.initialized = True
         
     def preprocess(self, path):
@@ -50,9 +55,17 @@ class SimCom(BaseWraper):
     def train(self, train_df, val_df, **kwarg):
         sim_train, com_train = self.preprocess(train_df)
         _ , com_val = self.preprocess(val_df)
+        checkpoint_path = kwarg.get("checkpoint_path")
 
         print("Train Sim:")
-        self.sim.train(sim_train, **kwarg)        
+        if self.resumed_from_checkpoint:
+            print("Loaded Sim from checkpoint; skip one-shot retraining.")
+        else:
+            self.sim.train(sim_train, **kwarg)
+            if checkpoint_path is not None:
+                # The sklearn half is trained in one shot and must accompany the
+                # COM checkpoint so a resumed SimCom model is complete.
+                self.sim.save(save_path=checkpoint_path)
         print("Train Com:")
         self.com.train(com_train, com_val, **kwarg)
 

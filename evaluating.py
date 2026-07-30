@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .models.init_model import init_model
+from .training import resolve_model_output_dir
 from .utils.utils import create_dg_cache
 from .utils.hf_dataset import prepare_hf_dataset_paths
 from .utils.metrics import get_metrics
@@ -109,7 +110,11 @@ def evaluating(params):
         if dictionary is None and model.model_name not in NO_DICT_MODELS:
             dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'
         hyperparameters = params.hyperparameters
-        model_path = f'{dg_cache_path}/save/{params.repo_name}/models/best_epoch' if params.model_path is None else params.model_path
+        model_path = (
+            os.path.join(resolve_model_output_dir(params, dg_cache_path), "last_epoch")
+            if params.model_path is None
+            else params.model_path
+        )
         print(f"Init model: {model.model_name}")
         model.initialize(model_path=model_path, dictionary=dictionary, hyperparameters=hyperparameters)
 

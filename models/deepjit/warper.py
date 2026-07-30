@@ -172,13 +172,6 @@ class DeepJIT(BaseWraper):
                     epoch=epoch,
                     optimizer=self.optimizer.state_dict(),
                     loss=self.total_loss,
-                    file_name=f"{self.model_name}_checkpoint_epoch_{epoch}.pth",
-                )
-                self.save(
-                    save_path=checkpoint_path,
-                    epoch=epoch,
-                    optimizer=self.optimizer.state_dict(),
-                    loss=self.total_loss,
                     file_name=f"{self.model_name}_checkpoint_last.pth",
                 )
 

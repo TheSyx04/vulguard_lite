@@ -30,9 +30,11 @@ class JITFine(BaseWraper):
 
         self.optimizer = None
         self.scheduler = None
+        self._scheduler_state_dict = None
         self.epoch = 0
         self.step = 0
-        self.patience = 0  
+        self.patience = 0
+        self.best_pr_auc = 0
         
         self.config = None
         self.tokenizer = None
@@ -92,19 +94,19 @@ class JITFine(BaseWraper):
         
         
         if model_path is not None:
-            self.scheduler = get_linear_schedule_with_warmup(
-                self.optimizer, 
-                num_warmup_steps=1,
-                num_training_steps=1
-            )
-            
-            checkpoint = torch.load(f"{model_path}/jitfine.pth")  # Load the last saved checkpoint
+            checkpoint_file = os.path.join(model_path, "jitfine_checkpoint_last.pth")
+            if not os.path.exists(checkpoint_file):
+                checkpoint_file = os.path.join(model_path, "jitfine.pth")
+
+            checkpoint = torch.load(checkpoint_file, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            self._scheduler_state_dict = checkpoint.get("scheduler_state_dict")
             self.epoch = checkpoint['epoch']
             self.step = checkpoint['step']
             self.patience = checkpoint["patience"]
+            self.best_pr_auc = checkpoint.get("best_pr_auc", 0)
+            print(f"Loaded checkpoint from: {checkpoint_file}")
 
         # Set initialized to True
         self.initialized = True
@@ -209,6 +211,9 @@ class JITFine(BaseWraper):
                 num_warmup_steps=warmup_steps,
                 num_training_steps=max_steps
             )
+            if self._scheduler_state_dict is not None:
+                self.scheduler.load_state_dict(self._scheduler_state_dict)
+                self._scheduler_state_dict = None
 
         # Train!
         print("***** Running training *****")
@@ -219,11 +224,11 @@ class JITFine(BaseWraper):
         print("  Gradient Accumulation steps = ", self.hyperparameters["gradient_accumulation_steps"])
         print("  Total optimization steps = ", max_steps)
 
-        best_pr_auc = 0
-        global_step = 0
+        checkpoint_path = kwarg.get("checkpoint_path")
+        global_step = self.step
         self.model.zero_grad()
 
-        for idx in range(total_epochs):
+        for idx in range(self.epoch, total_epochs):
             bar = tqdm(train_dataloader, total=len(train_dataloader))
             tr_loss = 0
             tr_num = 0
@@ -264,10 +269,10 @@ class JITFine(BaseWraper):
 
                     pr_auc = get_auc(val_ground_truth, val_predict)
                     # Save model checkpoint
-                    if pr_auc > best_pr_auc:
-                        best_pr_auc = pr_auc
+                    if pr_auc > self.best_pr_auc:
+                        self.best_pr_auc = pr_auc
                         print("  " + "*" * 20)
-                        print("  Best pr_auc: %s", round(best_pr_auc, 4))
+                        print("  Best pr_auc: %s", round(self.best_pr_auc, 4))
                         print("  " + "*" * 20)
                         self.patience = 0
                         
@@ -280,18 +285,28 @@ class JITFine(BaseWraper):
                             print('Patience greater than {}, early stop!'.format(5 * self.patience))
                             return
                 bar.update()            
-        
+
+            self.epoch = idx + 1
+            self.step = global_step
+            if checkpoint_path is not None:
+                self.save(
+                    checkpoint_path,
+                    file_name=f"{self.model_name}_checkpoint_last.pth",
+                )
+
         self.save(f"{save_path}")
         print(f"Saving last model checkpoint to {save_path}")
     
     def save(self, save_path, **kwarg):
         os.makedirs(save_path, exist_ok=True)
         
-        save_path = f"{save_path}/jitfine.pth"
+        file_name = kwarg.get("file_name", "jitfine.pth")
+        save_path = os.path.join(save_path, file_name)
         torch.save({
             'epoch': self.epoch,
             'step': self.step,
             'patience': self.patience,
+            'best_pr_auc': self.best_pr_auc,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict()
