@@ -31,6 +31,8 @@ class Com(BaseWraper):
         self.last_epoch = 0 
         self.total_loss = 0  
         self.val_loader = None
+        self.best_valid_score = 0
+        self.early_stop_count = 5
                 
         self.default_input = "patch"
         
@@ -64,11 +66,17 @@ class Com(BaseWraper):
             self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
             self.optimizer = torch.optim.Adam(self.get_parameters())
             
-            checkpoint = torch.load(f"{model_path}/com.pth")  # Load the last saved checkpoint
+            checkpoint_file = os.path.join(model_path, "simcom_checkpoint_last.pth")
+            if not os.path.exists(checkpoint_file):
+                checkpoint_file = os.path.join(model_path, "com.pth")
+            checkpoint = torch.load(checkpoint_file, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.start_epoch = checkpoint['epoch'] + 1
             self.total_loss = checkpoint['loss']
+            self.best_valid_score = checkpoint.get("best_valid_score", 0)
+            self.early_stop_count = checkpoint.get("early_stop_count", 5)
+            print(f"Loaded checkpoint from: {checkpoint_file}")
 
         # Set initialized to True
         self.initialized = True
@@ -120,7 +128,8 @@ class Com(BaseWraper):
     
     def train(self, train_df, val_df, **kwarg):
         params = kwarg.get("params")
-        save_path = kwarg.get("save_path")   
+        save_path = kwarg.get("save_path")
+        checkpoint_path = kwarg.get("checkpoint_path")
         threshold = 0.5 if params.threshold is None else params.threshold  
         criterion = nn.BCELoss()
         if self.optimizer is None:   
@@ -133,8 +142,6 @@ class Com(BaseWraper):
         assert val_ground_truth is not None, "Ensure there is label column in validation data"
 
         
-        best_valid_score = 0
-        early_stop_count = 5
         self.last_epoch = self.hyperparameters["epoch"] if params.epochs is None else params.epochs
         for epoch in range(self.start_epoch, self.last_epoch + 1):
             print(f'Training: Epoch {epoch} / {self.last_epoch} -- Start')
@@ -161,9 +168,10 @@ class Com(BaseWraper):
             print('Valid data -- ROC-AUC score:', roc_auc,  ' -- PR-AUC score:', pr_auc)
 
             valid_score = pr_auc
-            if valid_score > best_valid_score:
-                best_valid_score = valid_score
-                print('Save a better model', best_valid_score)
+            should_stop = False
+            if valid_score > self.best_valid_score:
+                self.best_valid_score = valid_score
+                print('Save a better model', self.best_valid_score)
                 self.save(
                     save_path=save_path,
                     epoch=epoch,
@@ -171,21 +179,32 @@ class Com(BaseWraper):
                     loss=loss.item()
                 )
             else:
-                print('No update of models', early_stop_count)
+                print('No update of models', self.early_stop_count)
                 if epoch > 5:
-                    early_stop_count = early_stop_count - 1
-                if early_stop_count < 0:
-                    break
-            
+                    self.early_stop_count -= 1
+                should_stop = self.early_stop_count < 0
+
+            if checkpoint_path is not None:
+                self.save(
+                    save_path=checkpoint_path,
+                    epoch=epoch,
+                    file_name="simcom_checkpoint_last.pth",
+                )
+            if should_stop:
+                break
+
     
     def save(self, save_path, epoch=None, **kwarg):
         os.makedirs(save_path, exist_ok=True)
         
-        save_path = f"{save_path}/com.pth"
+        file_name = kwarg.get("file_name", "com.pth")
+        save_path = os.path.join(save_path, file_name)
         torch.save({
             'epoch': self.last_epoch if epoch is None else epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'loss': self.total_loss,
+            'best_valid_score': self.best_valid_score,
+            'early_stop_count': self.early_stop_count,
         }, save_path)
     

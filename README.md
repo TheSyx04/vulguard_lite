@@ -135,8 +135,8 @@ python -m vulguard_lite experiment \
 ```
 
 > If a run already has a metric file it is skipped entirely.
-> DeepJIT resumes from the last completed epoch. Checkpoints and final model
-> artifacts are isolated by sampling seed under
+> DeepJIT, JITFine, and SimCom resume from the last completed epoch. Checkpoints
+> and final model artifacts are isolated by sampling seed under
 > `models/<model>_seed_<seed>/`; per-epoch history is not retained.
 
 ---
