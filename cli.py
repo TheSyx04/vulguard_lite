@@ -76,6 +76,12 @@ def main(args=None):
     common_parser.add_argument("-hf_split_path", type=str, default=None, help="Optional subdirectory in the HF dataset repo to pin a specific split/fold")
     common_parser.add_argument("-hf_output_repo_id", type=str, default=None, help="Hugging Face dataset repo id used to upload experiment outputs")
     common_parser.add_argument("-hf_upload_result", type=str2bool, default=False, help="Upload final experiment outputs to Hugging Face dataset repo (True/False)")
+    common_parser.add_argument(
+        "-hf_upload_model_config_only",
+        type=str2bool,
+        default=False,
+        help="Upload only the run-1 model config for each seed; do not upload experiment output files (True/False)",
+    )
     
     training_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     training_parser.set_defaults(func=training)

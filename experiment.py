@@ -36,7 +36,8 @@ Timing log
     * Total time for that run (seconds)
 
     The log is also pushed to Hugging Face together with the CSV results when
-    ``-hf_upload_result True`` is set.
+    ``-hf_upload_result True`` is set, unless config-only mode suppresses
+    experiment output uploads.
 
 Directory layout produced
 -------------------------
@@ -195,9 +196,25 @@ def _hf_model_config_path(params, seed):
     return f"model_config/{params.repo_name}/{params.model}/{_split_tag(params)}/seed_{seed_label}"
 
 
+def _should_upload_model_config(params):
+    """Whether seed-scoped inference artifacts should be uploaded."""
+    return bool(
+        getattr(params, "hf_upload_result", False)
+        or getattr(params, "hf_upload_model_config_only", False)
+    )
+
+
+def _should_upload_results(params):
+    """Whether experiment CSV/log outputs should be uploaded."""
+    return bool(
+        getattr(params, "hf_upload_result", False)
+        and not getattr(params, "hf_upload_model_config_only", False)
+    )
+
+
 def _upload_model_config(params, local_folder, seed):
     """Upload one seed's final model artifact to the canonical dataset repo."""
-    if not getattr(params, "hf_upload_result", False):
+    if not _should_upload_model_config(params):
         return
     if not os.path.isdir(local_folder):
         raise FileNotFoundError(f"Model config folder not found: {local_folder}")
@@ -416,7 +433,8 @@ def run_experiment(params):
 
     If ``-hf_upload_result True`` is set, the entire experiment directory
     (including the timing log) is pushed to the specified Hugging Face dataset
-    repository.
+    repository. Setting ``-hf_upload_model_config_only True`` uploads only
+    run-1 model configs and suppresses that directory upload.
 
     Parameters
     ----------
@@ -814,7 +832,7 @@ def run_experiment(params):
         timing_logger.info(f"Total runs completed  : {global_run_idx}")
         timing_logger.info("=" * 70)
 
-        if getattr(params, "hf_upload_result", False):
+        if _should_upload_results(params):
             output_repo_id = getattr(params, "hf_output_repo_id", None) or hf_repo_id
             if not output_repo_id:
                 raise ValueError("-hf_output_repo_id or -hf_repo_id is required when -hf_upload_result is True.")
