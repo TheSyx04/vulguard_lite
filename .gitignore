@@ -1,5 +1,9 @@
-__pycache__/
+*/__pycache__/
 *.pyc
 output/
 .venv/
 scripts/
+checkpoint/
+dg_cache/
+datasets/
+results/
