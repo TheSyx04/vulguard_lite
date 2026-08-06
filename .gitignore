@@ -1,9 +1,42 @@
-*/__pycache__/
-*.pyc
-output/
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local environment files
 .venv/
-scripts/
-checkpoint/
-dg_cache/
-datasets/
+venv/
+.conda/
+.env
+.env.*
+!.env.example
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime output, caches, downloaded data, and local checkpoints
+output/
 results/
+dg_cache/
+.cache/
+checkpoint/
+datasets/
+*.log
+
+# Local helper scripts are not part of the maintained package
+scripts/
