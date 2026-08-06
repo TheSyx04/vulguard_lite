@@ -37,7 +37,11 @@ def preprocess_code_line(code, remove_python_common_tokens=False):
     else:
         return code.strip()
 
-def convert_examples_to_features(item, pad_token=0, mask_padding_with_zero=True):
+def convert_examples_to_features(
+        item,
+        pad_token=0,
+        mask_padding_with_zero=True,
+        return_metadata=False):
     # source
     commit_id, files, msg, label, tokenizer, hyperparameters, manual_features = item
     added_tokens = []
@@ -46,19 +50,35 @@ def convert_examples_to_features(item, pad_token=0, mask_padding_with_zero=True)
     msg_tokens = tokenizer.tokenize(msg)
     msg_tokens = msg_tokens[:min(hyperparameters["max_msg_length"], len(msg_tokens))]
 
-    # Use regular expression to extract both parts
+    # Keep this expression compatible with the historical preprocessing path.
+    # Attribution mode validates malformed records so a batch can skip them
+    # explicitly instead of failing later with an unbound local variable.
     match = re.match(r"<ADD>(.*) <REMOVE>(.*)", files)
 
-    if match:
-        added_part = match.group(1).encode('utf-8', 'ignore').decode('utf-8')
-        removed_part = match.group(2).encode('utf-8', 'ignore').decode('utf-8')
+    if not match:
+        raise ValueError("missing_or_malformed_add_remove_markers")
+
+    added_part = match.group(1).encode('utf-8', 'ignore').decode('utf-8')
+    removed_part = match.group(2).encode('utf-8', 'ignore').decode('utf-8')
 
     added_tokens.extend(tokenizer.tokenize(added_part))
     removed_tokens.extend(tokenizer.tokenize(removed_part))
-    input_tokens = msg_tokens + ['<ADD>'] + added_tokens + ['<REMOVE>'] + removed_tokens
+    content_tokens = msg_tokens + ['<ADD>'] + added_tokens + ['<REMOVE>'] + removed_tokens
+    content_regions = (
+        ['message'] * len(msg_tokens)
+        + ['add_marker']
+        + ['added'] * len(added_tokens)
+        + ['remove_marker']
+        + ['removed'] * len(removed_tokens)
+    )
+    max_content_length = 512 - 2
+    truncated_content_tokens = max(0, len(content_tokens) - max_content_length)
+    retained_content_tokens = content_tokens[:max_content_length]
+    retained_content_regions = content_regions[:max_content_length]
+    omitted_regions = content_regions[max_content_length:]
 
-    input_tokens = input_tokens[:512 - 2]
-    input_tokens = [tokenizer.cls_token] + input_tokens + [tokenizer.sep_token]
+    input_tokens = [tokenizer.cls_token] + retained_content_tokens + [tokenizer.sep_token]
+    sequence_regions = ['cls'] + retained_content_regions + ['sep']
     input_ids = tokenizer.convert_tokens_to_ids(input_tokens)
     input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
 
@@ -67,41 +87,78 @@ def convert_examples_to_features(item, pad_token=0, mask_padding_with_zero=True)
 
     input_ids = input_ids + ([pad_token] * padding_length)
     input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
+    sequence_regions = sequence_regions + (['padding'] * padding_length)
     assert len(input_ids) == 512
     assert len(input_mask) == 512
+    assert len(sequence_regions) == 512
+
+    attribution_metadata = None
+    if return_metadata:
+        attribution_metadata = {
+            "tokens_before_truncation": content_tokens,
+            "tokens_after_truncation": input_tokens,
+            "sequence_regions": sequence_regions,
+            "add_marker_position": next(
+                (index for index, region in enumerate(sequence_regions) if region == 'add_marker'),
+                None,
+            ),
+            "remove_marker_position": next(
+                (index for index, region in enumerate(sequence_regions) if region == 'remove_marker'),
+                None,
+            ),
+            "pre_truncation_content_tokens": len(content_tokens),
+            "truncated_content_tokens": truncated_content_tokens,
+            "truncated_added_tokens": omitted_regions.count('added'),
+            "truncated_removed_tokens": omitted_regions.count('removed'),
+            "truncated": truncated_content_tokens > 0,
+        }
 
     return InputFeatures(commit_id=commit_id,
                          input_ids=input_ids,
                          input_mask=input_mask,
                          input_tokens=input_tokens,
                          manual_features=manual_features,
-                         label=label)
+                         label=label,
+                         attribution_metadata=attribution_metadata)
 
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, commit_id, input_ids, input_mask, input_tokens, label, manual_features):
+    def __init__(self, commit_id, input_ids, input_mask, input_tokens, label,
+                 manual_features, attribution_metadata=None):
         self.commit_id = commit_id
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.input_tokens = input_tokens
         self.label = label
         self.manual_features = manual_features
+        self.attribution_metadata = attribution_metadata
 
 
 class TextDataset(Dataset):
-    def __init__(self, tokenizer, hyperparameters, changes_filename=None, features_filename=None, mode='train'):
+    def __init__(self, tokenizer, hyperparameters, changes_filename=None,
+                 features_filename=None, mode='train', return_metadata=False,
+                 skip_invalid=False):
         self.examples = []
+        self.failures = []
 
         data = []
         commit_ids, labels, msgs, codes = [], [], [], []
-        with open(changes_filename, "r") as f:
-            for line in f:
-                data_point = json.loads(line)
-                commit_ids.append(data_point["commit_id"]) 
-                labels.append(data_point["label"] if "label" in data_point else None) 
-                msgs.append(data_point["messages"]) 
-                codes.append(data_point["code_change"])
+        with open(changes_filename, "r", encoding="utf-8") as f:
+            for line_number, line in enumerate(f, start=1):
+                try:
+                    data_point = json.loads(line)
+                    commit_ids.append(data_point["commit_id"])
+                    labels.append(data_point["label"] if "label" in data_point else None)
+                    msgs.append(data_point["messages"])
+                    codes.append(data_point["code_change"])
+                except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                    if not skip_invalid:
+                        raise
+                    self.failures.append({
+                        "commit_id": f"<line:{line_number}>",
+                        "reason": f"invalid_code_record:{exc}",
+                    })
         
         features_data = pd.read_json(features_filename, lines=True)
         features_data = convert_dtype_dataframe(features_data, manual_features_columns)
@@ -112,14 +169,35 @@ class TextDataset(Dataset):
         features_data[manual_features_columns] = manual_features
 
         for commit_id, label, msg, files in zip(commit_ids, labels, msgs, codes):
-            manual_features = features_data[features_data['commit_id'] == commit_id].head(1)[manual_features_columns].to_numpy().squeeze()
+            matching_features = features_data[features_data['commit_id'] == commit_id].head(1)
+            if matching_features.empty:
+                if skip_invalid:
+                    self.failures.append({
+                        "commit_id": commit_id,
+                        "reason": "missing_manual_features",
+                    })
+                    continue
+                raise ValueError(f"missing_manual_features:{commit_id}")
+            manual_features = matching_features[manual_features_columns].to_numpy().squeeze()
             data.append((commit_id, files, msg, label, tokenizer, hyperparameters, manual_features))
         # only use 20% valid data to keep best model
         # convert example to input features
         if mode == 'train':
             random.shuffle(data)
 
-        self.examples = [convert_examples_to_features(x) for x in tqdm(data, total=len(data))]
+        for item in tqdm(data, total=len(data)):
+            try:
+                self.examples.append(convert_examples_to_features(
+                    item,
+                    return_metadata=return_metadata,
+                ))
+            except Exception as exc:
+                if not skip_invalid:
+                    raise
+                self.failures.append({
+                    "commit_id": item[0],
+                    "reason": str(exc),
+                })
 
     def __len__(self):
         return len(self.examples)

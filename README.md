@@ -14,12 +14,14 @@ calibration on commit-level vulnerability classifiers.
    - [Train Only](#2-train-only)
    - [Evaluate Only](#3-evaluate-only)
 3. [Sub-commands](#sub-commands)
+   - [Token Attention Attribution](#4-token-attention-attribution)
 4. [Argument Reference](#argument-reference)
    - [Global Flags](#global-flags)
    - [Common Arguments](#common-arguments)
    - [experiment Arguments](#experiment-arguments)
    - [training Arguments](#training-arguments)
    - [evaluating Arguments](#evaluating-arguments)
+   - [attribute Arguments](#attribute-arguments)
 5. [Supported Models](#supported-models)
 6. [Dataset Format](#dataset-format)
 7. [Output Layout](#output-layout)
@@ -180,6 +182,60 @@ python -m vulguard_lite evaluating \
   -calibration_range 0 1 10001
 ```
 
+### 4. Token Attention Attribution
+
+The `attribute` sub-command ranks JITFine token occurrences from the added and
+removed regions of the existing test input using CLS attention. It preprocesses
+the complete feature file before selecting a commit so the current feature
+scaling context is preserved.
+
+```bash
+python -m vulguard_lite attribute \
+  -repo_language C \
+  -model jitfine \
+  -device cuda \
+  -model_path ./models/best_epoch \
+  -hyperparameters ./vulguard_lite/models/jitfine/hyperparameters.json \
+  -test_set /data/test_tlel_linux.jsonl,/data/test_deepjit_linux.jsonl \
+  -output_dir ./results/jitfine_token_attention \
+  -attention_strategy last_layer_cls_mean \
+  -all_commits
+```
+
+Use `-commit_id <id>` to export one commit or
+`-only_predicted_vulnerable` to filter by the commit-level prediction. Existing
+results require either `-resume` or `-overwrite`.
+
+The output is an attention diagnostic, not a class-specific explanation or a
+claim that a token or source line is vulnerable. Source-line aggregation is
+deferred until provenance-rich diff data is available.
+
+Attribution is intentionally **observed-only**. The ranking contains only added
+or removed code-token occurrences that survived JITFine's 512-position input
+construction and were actually processed by the transformer. Tokens omitted by
+truncation are outside the attribution scope: they are not ranked and are not
+assigned zero or estimated scores. When token-to-line provenance becomes
+available, only source lines containing at least one observed token will be
+eligible for line ranking; lines that the model did not observe will remain out
+of scope.
+
+Omit `-top_k` to export every observed code-token occurrence. Supplying
+`-top_k N` deliberately limits each commit's exported ranking to its first `N`
+entries.
+
+Implementation details that affect interpretation:
+
+- JITFine constructs `[CLS] message <ADD> added-code <REMOVE> removed-code
+  [SEP]`, keeps at most 510 content tokens, then pads the sequence to 512.
+- The ranking uses CLS-to-token attention from the joint message/code encoder.
+  JITFine's 14 manual commit features affect its final prediction but do not
+  receive token-level attribution.
+- Attribution uses eager attention because PyTorch SDPA does not return the
+  attention probabilities required for ranking.
+- Each selected sample is inferred with attention disabled and enabled; the
+  command fails that sample if enabling attention changes its probability
+  beyond the configured numerical tolerance.
+
 ---
 
 ## Sub-commands
@@ -189,6 +245,7 @@ python -m vulguard_lite evaluating \
 | `experiment` | Full pipeline: training → validation calibration → test. Supports multiple runs and budget sweeps. |
 | `training` | Fit a model on the training set and save the best checkpoint. |
 | `evaluating` | Run inference on a test (or val) set, compute metrics, and optionally calibrate the decision threshold. |
+| `attribute` | Rank JITFine added/removed token occurrences by CLS attention. |
 
 ---
 
@@ -299,6 +356,25 @@ All **common arguments** plus:
 
 ---
 
+### `attribute` Arguments
+
+| Argument | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `-model` | str | `jitfine` | no | The MVP currently supports JITFine only. |
+| `-model_path` | str | — | **yes** | JITFine checkpoint file or directory containing `jitfine.pth`. |
+| `-test_set` | str | — | **yes** | Full `features.jsonl,code.jsonl` test pair. |
+| `-hyperparameters` | str | — | **yes** | JITFine hyperparameters JSON. |
+| `-output_dir` | str | — | **yes** | Directory for JSONL, CSV, metadata, and summary output. |
+| `-attention_strategy` | str | `last_layer_cls_mean` | no | CLS attention aggregation strategy. |
+| `-top_k` | int | all | no | Limit exported ranked token occurrences per commit. |
+| `-commit_id` | str | `None` | no | Attribute one commit after preprocessing the complete test pair. |
+| `-only_predicted_vulnerable` | flag | off | no | Keep only commits whose probability is above the threshold. |
+| `-all_commits` | flag | off | no | Explicitly select every commit; this is also the default selection. |
+| `-resume` | flag | off | no | Resume an output with matching input/config fingerprints. |
+| `-overwrite` | flag | off | no | Replace existing attribution artifacts. |
+
+---
+
 ## Supported Models
 
 | Model | Type | Needs dictionary | GPU | Primary input |
@@ -328,7 +404,7 @@ All dataset files are in **JSONL** format (one JSON object per line).
 **Merge / code file** (`train_merge_<repo>.jsonl`):
 
 ```json
-{"commit_id": "abc123", "label": 1, "message": "fix buffer overflow", "diff": "..."}
+{"commit_id": "abc123", "label": 1, "messages": "fix buffer overflow", "code_change": "<ADD>... <REMOVE>..."}
 ```
 
 ### File naming on Hugging Face

@@ -52,7 +52,8 @@ class JITFine(BaseWraper):
     def set_device(self, device):
         self.device = device
     
-    def initialize(self, hyperparameters, model_path=None, **kwarg):        
+    def initialize(self, hyperparameters, model_path=None, inference_only=False,
+                   attention_implementation=None, **kwarg):
         # Load hyperparameter
         with open(hyperparameters, 'r') as file:
             self.hyperparameters = json.load(file)
@@ -69,42 +70,61 @@ class JITFine(BaseWraper):
         self.tokenizer.add_special_tokens(special_tokens_dict)
 
         # Init encoder
-        self.encoder = RobertaModel.from_pretrained(self.hyperparameters["model_name_or_path"], config=self.config)    
+        encoder_kwargs = {"config": self.config}
+        if attention_implementation is not None:
+            encoder_kwargs["attn_implementation"] = attention_implementation
+        self.encoder = RobertaModel.from_pretrained(
+            self.hyperparameters["model_name_or_path"],
+            **encoder_kwargs,
+        )
         self.encoder.resize_token_embeddings(len(self.tokenizer))
         
         # Init model
         self.model = Model(self.encoder, self.config, self.tokenizer, self.hyperparameters).to(device=self.device)
         
-        # Init optimizer
-        no_decay = ['bias', 'LayerNorm.weight']
+        if not inference_only:
+            # Optimizer state is needed for training/resume, but attribution and
+            # evaluation only require model weights.
+            no_decay = ['bias', 'LayerNorm.weight']
 
-        optimizer_grouped_parameters = [
-            {
-                'params': [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
-                'weight_decay': self.hyperparameters["weight_decay"]
-            },
-            {
-                'params': [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)], 
-                'weight_decay': 0.0
-            },
-        ]
-        self.optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=self.hyperparameters["train"]["learning_rate"], eps=self.hyperparameters["adam_epsilon"])
+            optimizer_grouped_parameters = [
+                {
+                    'params': [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                    'weight_decay': self.hyperparameters["weight_decay"]
+                },
+                {
+                    'params': [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+                    'weight_decay': 0.0
+                },
+            ]
+            self.optimizer = torch.optim.AdamW(
+                optimizer_grouped_parameters,
+                lr=self.hyperparameters["train"]["learning_rate"],
+                eps=self.hyperparameters["adam_epsilon"],
+            )
         
         
         if model_path is not None:
-            self.scheduler = get_linear_schedule_with_warmup(
-                self.optimizer, 
-                num_warmup_steps=1,
-                num_training_steps=1
+            checkpoint_path = (
+                model_path if os.path.isfile(model_path)
+                else os.path.join(model_path, "jitfine.pth")
             )
-            
-            checkpoint = torch.load(f"{model_path}/jitfine.pth")  # Load the last saved checkpoint
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            self.epoch = checkpoint['epoch']
-            self.step = checkpoint['step']
-            self.patience = checkpoint["patience"]
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            model_state = checkpoint.get('model_state_dict', checkpoint)
+            self.model.load_state_dict(model_state)
+            if not inference_only:
+                if 'model_state_dict' not in checkpoint:
+                    raise ValueError("training resume requires a full JITFine checkpoint")
+                self.scheduler = get_linear_schedule_with_warmup(
+                    self.optimizer,
+                    num_warmup_steps=1,
+                    num_training_steps=1,
+                )
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                self.epoch = checkpoint['epoch']
+                self.step = checkpoint['step']
+                self.patience = checkpoint["patience"]
 
         # Set initialized to True
         self.initialized = True

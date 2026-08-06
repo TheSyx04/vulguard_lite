@@ -6,6 +6,7 @@ from datetime import datetime
 from .training import training
 from .evaluating import evaluating
 from .experiment import run_experiment
+from .attribution.runner import attribute
 from .models.init_model import models
 
 __version__ = "0.2.01"
@@ -113,6 +114,33 @@ def main(args=None):
         help="Threshold search range for calibration: START END STEPS (example: -calibration_range 0 1 10001)",
     )
 
+    attribution_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    attribution_parser.set_defaults(func=attribute)
+    attribution_parser.add_argument("-model", choices=["jitfine"], default="jitfine")
+    attribution_parser.add_argument("-device", default="cpu", help="Eg: cpu, cuda, cuda:1")
+    attribution_parser.add_argument("-threshold", type=float_0_1, default=0.5)
+    attribution_parser.add_argument("-model_path", required=True, help="JITFine checkpoint file or directory")
+    attribution_parser.add_argument(
+        "-test_set",
+        required=True,
+        help="Full test pair: features.jsonl,code.jsonl",
+    )
+    attribution_parser.add_argument("-hyperparameters", required=True)
+    attribution_parser.add_argument("-output_dir", required=True)
+    attribution_parser.add_argument(
+        "-attention_strategy",
+        choices=["last_layer_cls_mean", "all_layers_cls_mean", "attention_rollout"],
+        default="last_layer_cls_mean",
+    )
+    attribution_parser.add_argument("-top_k", type=int_gte_1, default=None)
+    selection_group = attribution_parser.add_mutually_exclusive_group()
+    selection_group.add_argument("-commit_id", default=None)
+    selection_group.add_argument("-only_predicted_vulnerable", action="store_true")
+    selection_group.add_argument("-all_commits", action="store_true")
+    output_group = attribution_parser.add_mutually_exclusive_group()
+    output_group.add_argument("-overwrite", action="store_true")
+    output_group.add_argument("-resume", action="store_true")
+
     experiment_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     experiment_parser.set_defaults(func=run_experiment)
     experiment_parser.add_argument("-model", type=str, default=None, choices=models, help="List of models")
@@ -174,6 +202,11 @@ def main(args=None):
     subparsers.add_parser('training', parents=[training_parser], help='Training Function')
     subparsers.add_parser('evaluating', parents=[evaluating_parser], help='Evaluating Function')
     subparsers.add_parser('experiment', parents=[experiment_parser], help='Run full experiment loop: training -> validation calibration -> test')
+    subparsers.add_parser(
+        'attribute',
+        parents=[attribution_parser],
+        help='Rank JITFine code-change token occurrences by CLS attention',
+    )
 
     options = parser.parse_args(args)
 
@@ -198,7 +231,7 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment']:
+    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment', 'attribute']:
         print(f"Set seed: {options.seed}")
         seed_everything(options.seed)
         

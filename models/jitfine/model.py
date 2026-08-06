@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch
 from torch.nn import BCELoss
@@ -35,20 +34,37 @@ class Model(nn.Module):
         self.args = args
 
     def forward(self, inputs_ids, attn_masks, manual_features=None,
-                labels=None, output_attentions=None):
-        outputs = \
-            self.encoder(input_ids=inputs_ids, attention_mask=attn_masks, output_attentions=output_attentions)
+                labels=None, output_attentions=None,
+                return_attribution_data=False):
+        outputs = self.encoder(
+            input_ids=inputs_ids,
+            attention_mask=attn_masks,
+            output_attentions=output_attentions,
+            return_dict=True,
+        )
 
-        last_layer_attn_weights = outputs.attentions[self.config.num_hidden_layers - 1][:, :,
-                                  0].detach() if output_attentions else None
+        attention_tensors = outputs.attentions if output_attentions else None
+        last_layer_attn_weights = None
+        if attention_tensors:
+            last_layer_attn_weights = attention_tensors[-1][:, :, 0].detach()
 
         logits = self.classifier(outputs[0], manual_features)
 
         prob = torch.sigmoid(logits)
+        loss = None
         if labels is not None:
             loss_fct = BCELoss()
             loss = loss_fct(prob, labels.unsqueeze(1).float())
+
+        if return_attribution_data:
+            return {
+                "probability": prob,
+                "logit": logits,
+                "attentions": attention_tensors,
+                "loss": loss,
+            }
+
+        if labels is not None:
             return loss, prob, last_layer_attn_weights
-        else:
-            return prob
+        return prob
 
