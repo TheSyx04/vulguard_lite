@@ -119,19 +119,21 @@ def convert_examples_to_features(
                          input_tokens=input_tokens,
                          manual_features=manual_features,
                          label=label,
+                         code_change=files,
                          attribution_metadata=attribution_metadata)
 
 class InputFeatures(object):
     """A single set of features of data."""
 
     def __init__(self, commit_id, input_ids, input_mask, input_tokens, label,
-                 manual_features, attribution_metadata=None):
+                 manual_features, attribution_metadata=None, code_change=None):
         self.commit_id = commit_id
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.input_tokens = input_tokens
         self.label = label
         self.manual_features = manual_features
+        self.code_change = code_change
         self.attribution_metadata = attribution_metadata
 
 

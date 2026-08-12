@@ -7,6 +7,7 @@ from .training import training
 from .evaluating import evaluating
 from .experiment import run_experiment
 from .attribution.runner import attribute
+from .attribution.source_provenance import prepare_lines
 from .models.init_model import models
 
 __version__ = "0.2.01"
@@ -116,16 +117,24 @@ def main(args=None):
 
     attribution_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     attribution_parser.set_defaults(func=attribute)
-    attribution_parser.add_argument("-model", choices=["jitfine"], default="jitfine")
+    attribution_parser.add_argument("-model", choices=["jitfine", "deepjit", "simcom"], default="jitfine")
     attribution_parser.add_argument("-device", default="cpu", help="Eg: cpu, cuda, cuda:1")
     attribution_parser.add_argument("-threshold", type=float_0_1, default=0.5)
-    attribution_parser.add_argument("-model_path", required=True, help="JITFine checkpoint file or directory")
+    attribution_parser.add_argument("-model_path", required=True, help="Checkpoint file or directory")
     attribution_parser.add_argument(
         "-test_set",
         required=True,
-        help="Full test pair: features.jsonl,code.jsonl",
+        help="JITFine/SimCom pair or one DeepJIT merge JSONL file",
     )
     attribution_parser.add_argument("-hyperparameters", required=True)
+    attribution_parser.add_argument("-dictionary", default=None, help="Required for DeepJIT and SimCom")
+    attribution_parser.add_argument(
+        "-line_provenance", default=None,
+        help="Optional line_provenance.jsonl for verified changed-line ranking",
+    )
+    attribution_parser.add_argument(
+        "-line_aggregation", choices=["sum", "mean", "max"], default="sum",
+    )
     attribution_parser.add_argument("-output_dir", required=True)
     attribution_parser.add_argument(
         "-attention_strategy",
@@ -133,6 +142,10 @@ def main(args=None):
         default="last_layer_cls_mean",
     )
     attribution_parser.add_argument("-top_k", type=int_gte_1, default=None)
+    attribution_parser.add_argument(
+        "-target_class", type=int, choices=[0, 1], default=1,
+        help="Class logit targeted by Grad-CAM; ignored by JITFine",
+    )
     selection_group = attribution_parser.add_mutually_exclusive_group()
     selection_group.add_argument("-commit_id", default=None)
     selection_group.add_argument("-only_predicted_vulnerable", action="store_true")
@@ -140,6 +153,16 @@ def main(args=None):
     output_group = attribution_parser.add_mutually_exclusive_group()
     output_group.add_argument("-overwrite", action="store_true")
     output_group.add_argument("-resume", action="store_true")
+
+    prepare_lines_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    prepare_lines_parser.set_defaults(func=prepare_lines)
+    prepare_selection = prepare_lines_parser.add_mutually_exclusive_group(required=True)
+    prepare_selection.add_argument("-commit_id", default=None, help="One commit SHA or GitHub commit URL")
+    prepare_selection.add_argument(
+        "-commit_urls", default=None,
+        help="Text/JSONL file containing commit URLs or SHAs",
+    )
+    prepare_lines_parser.add_argument("-output_dir", required=True)
 
     experiment_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     experiment_parser.set_defaults(func=run_experiment)
@@ -205,7 +228,11 @@ def main(args=None):
     subparsers.add_parser(
         'attribute',
         parents=[attribution_parser],
-        help='Rank JITFine code-change token occurrences by CLS attention',
+        help='Attribute JITFine tokens or DeepJIT/SimCom code-change rows',
+    )
+    subparsers.add_parser(
+        'prepare-lines', parents=[prepare_lines_parser],
+        help='Prepare provenance-rich merge/patch inputs from Git commits',
     )
 
     options = parser.parse_args(args)
@@ -231,7 +258,7 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment', 'attribute']:
+    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment', 'attribute', 'prepare-lines']:
         print(f"Set seed: {options.seed}")
         seed_everything(options.seed)
         

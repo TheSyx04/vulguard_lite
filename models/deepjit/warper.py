@@ -34,7 +34,7 @@ class DeepJIT(BaseWraper):
     def set_device(self, device):
         self.device = device
     
-    def initialize(self, dictionary, hyperparameters, model_path=None, **kwarg):
+    def initialize(self, dictionary, hyperparameters, model_path=None, inference_only=False, **kwarg):
         # Load dictionary
         dictionary = open_jsonl(dictionary)
         self.message_dictionary, self.code_dictionary = dictionary[0], dictionary[1]
@@ -53,17 +53,19 @@ class DeepJIT(BaseWraper):
             
         else:        
             self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
-            self.optimizer = torch.optim.Adam(self.get_parameters())
+            if not inference_only:
+                self.optimizer = torch.optim.Adam(self.get_parameters())
 
-            checkpoint_file = f"{model_path}/{self.model_name}_checkpoint_last.pth"
+            checkpoint_file = model_path if os.path.isfile(model_path) else f"{model_path}/{self.model_name}_checkpoint_last.pth"
             if not os.path.exists(checkpoint_file):
                 checkpoint_file = f"{model_path}/deepjit.pth"
 
-            checkpoint = torch.load(checkpoint_file)  # Load checkpoint for resume/inference
+            checkpoint = torch.load(checkpoint_file, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.start_epoch = checkpoint['epoch'] + 1
-            self.total_loss = checkpoint['loss']
+            if not inference_only:
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.start_epoch = checkpoint['epoch'] + 1
+                self.total_loss = checkpoint['loss']
             print(f"Loaded checkpoint from: {checkpoint_file}")
 
         # Set initialized to True

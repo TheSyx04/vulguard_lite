@@ -14,9 +14,12 @@ from .export import (
     load_jsonl,
     write_json,
     write_jsonl,
+    write_line_csv,
     write_token_csv,
 )
 from .jitfine_attention import aggregate_cls_attention, rank_code_tokens
+from .line_ranking import (aggregate_line_scores, jitfine_position_line_ids,
+                           load_provenance_index, verify_serialization)
 from .schemas import TokenAttributionResult
 
 
@@ -53,6 +56,8 @@ def _build_run_metadata(args, feature_path: str, code_path: str) -> Dict[str, An
         "feature_file": file_fingerprint(feature_path),
         "code_file": file_fingerprint(code_path),
     }
+    if getattr(args, "line_provenance", None):
+        fingerprints["line_provenance"] = file_fingerprint(args.line_provenance)
     selection_mode = "all_commits"
     if args.commit_id:
         selection_mode = "commit_id"
@@ -72,6 +77,7 @@ def _build_run_metadata(args, feature_path: str, code_path: str) -> Dict[str, An
         "top_k": args.top_k,
         "selection_mode": selection_mode,
         "commit_id": args.commit_id,
+        "line_aggregation": getattr(args, "line_aggregation", "sum"),
         "seed": args.seed,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git_revision": _git_revision(),
@@ -89,7 +95,7 @@ def _validate_resume_metadata(path: str, current: Dict[str, Any]) -> None:
         previous = json.load(handle)
     comparable = (
         "fingerprints", "threshold", "attention_strategy", "top_k",
-        "selection_mode", "commit_id",
+        "selection_mode", "commit_id", "line_aggregation",
     )
     if any(previous.get(key) != current.get(key) for key in comparable):
         raise ValueError("resume_configuration_mismatch")
@@ -99,7 +105,7 @@ def _failure(commit_id: str, reason: str, status: str = "failed") -> Dict[str, A
     return {"commit_id": str(commit_id), "status": status, "reason": reason}
 
 
-def _attribute_example(model: JITFine, example, args, checkpoint_id: str):
+def _attribute_example(model: JITFine, example, args, checkpoint_id: str, provenance=None):
     input_ids = torch.tensor(example.input_ids, dtype=torch.long, device=model.device).unsqueeze(0)
     attention_mask = torch.tensor(example.input_mask, dtype=torch.long, device=model.device).unsqueeze(0)
     manual_features = torch.tensor(example.manual_features, device=model.device).unsqueeze(0)
@@ -178,13 +184,24 @@ def _attribute_example(model: JITFine, example, args, checkpoint_id: str):
             "prediction_preservation_delta": abs(prediction_score - attribution_probability),
         },
     )
-    return result.to_dict()
+    record = result.to_dict()
+    if provenance is not None:
+        verify_serialization(provenance, example.code_change, "merge")
+        position_to_line = jitfine_position_line_ids(model.tokenizer, example, provenance)
+        line_result = aggregate_line_scores(
+            provenance,
+            ((line_id, scores[position]) for position, line_id in position_to_line.items()),
+            getattr(args, "line_aggregation", "sum"), args.top_k,
+            model_input_kind="merge",
+        )
+        record.update(line_result)
+        record["metadata"]["source_line_provenance_verified"] = True
+        record["metadata"]["serialization_alignment_status"] = "exact"
+    return record
 
 
-def attribute(args):
+def attribute_jitfine(args):
     """CLI entry point for the JITFine token-attention baseline."""
-    if args.model != "jitfine":
-        raise ValueError("attribute currently supports only jitfine")
     paths = [part.strip() for part in args.test_set.split(",", 1)]
     if len(paths) != 2 or not all(paths):
         raise ValueError("-test_set must be features.jsonl,code.jsonl")
@@ -194,6 +211,7 @@ def attribute(args):
     metadata_path = os.path.join(args.output_dir, "run_metadata.json")
     jsonl_path = os.path.join(args.output_dir, "token_attributions.jsonl")
     csv_path = os.path.join(args.output_dir, "token_attributions.csv")
+    line_csv_path = os.path.join(args.output_dir, "line_attributions.csv")
     summary_path = os.path.join(args.output_dir, "summary.json")
     output_paths = (metadata_path, jsonl_path, csv_path, summary_path)
     if any(os.path.exists(path) for path in output_paths) and not (args.overwrite or args.resume):
@@ -206,6 +224,10 @@ def attribute(args):
 
     records: List[Dict[str, Any]] = load_jsonl(jsonl_path) if args.resume else []
     completed_ids = {record.get("commit_id") for record in records}
+    provenance_index = (
+        load_provenance_index(args.line_provenance)
+        if getattr(args, "line_provenance", None) else None
+    )
 
     model = JITFine(language=args.repo_language, device=args.device)
     model.initialize(
@@ -246,7 +268,10 @@ def attribute(args):
         if commit_id in completed_ids:
             continue
         try:
-            record = _attribute_example(model, example, args, checkpoint_id)
+            provenance = provenance_index.get(commit_id) if provenance_index is not None else None
+            if provenance_index is not None and provenance is None:
+                raise ValueError("missing_line_provenance")
+            record = _attribute_example(model, example, args, checkpoint_id, provenance)
         except Exception as exc:
             record = _failure(commit_id, f"{type(exc).__name__}:{exc}")
         records.append(record)
@@ -256,6 +281,8 @@ def attribute(args):
 
     write_jsonl(jsonl_path, records)
     write_token_csv(csv_path, records)
+    if provenance_index is not None:
+        write_line_csv(line_csv_path, records)
     succeeded = sum(record.get("status") == "succeeded" for record in records)
     skipped = sum(record.get("status") == "skipped" for record in records)
     failed = sum(record.get("status") == "failed" for record in records)
@@ -273,3 +300,13 @@ def attribute(args):
     print(f"Token attribution complete: {succeeded} succeeded, {skipped} skipped, {failed} failed")
     print(f"Results: {args.output_dir}")
     return summary
+
+
+def attribute(args):
+    """Dispatch to the attribution implementation matching the selected model."""
+    if args.model == "jitfine":
+        return attribute_jitfine(args)
+    if args.model in {"deepjit", "simcom"}:
+        from .cnn_runner import attribute_cnn
+        return attribute_cnn(args)
+    raise ValueError(f"unsupported attribution model:{args.model}")

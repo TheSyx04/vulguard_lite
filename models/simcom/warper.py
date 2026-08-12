@@ -17,7 +17,7 @@ class SimCom(BaseWraper):
         
     def initialize(self, dictionary, hyperparameters, model_path=None, **kwarg):
         self.sim.initialize(model_path=model_path)
-        self.com.initialize(dictionary=dictionary, hyperparameters=hyperparameters, model_path=model_path)
+        self.com.initialize(dictionary=dictionary, hyperparameters=hyperparameters, model_path=model_path, **kwarg)
         self.initialized = True
         
     def preprocess(self, path):

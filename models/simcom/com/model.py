@@ -51,7 +51,7 @@ class DeepJITModel(nn.Module):
         x = self.forward_msg(x=x, convs=convs_hunks)
         return x
 
-    def forward(self, msg, code):
+    def forward(self, msg, code, return_attribution_data=False):
         x_msg = self.embed_msg(msg)
         x_msg = self.forward_msg(x_msg, self.convs_msg)
 
@@ -62,6 +62,8 @@ class DeepJITModel(nn.Module):
         x_commit = self.dropout(x_commit)
         out = self.fc1(x_commit)
         out = F.relu(out)
-        out = self.fc2(out)
-        out = self.sigmoid(out).squeeze(1)
-        return out
+        logit = self.fc2(out).squeeze(1)
+        probability = self.sigmoid(logit)
+        if return_attribution_data:
+            return {"probability": probability, "logit": logit}
+        return probability

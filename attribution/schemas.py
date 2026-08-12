@@ -45,3 +45,17 @@ class TokenAttributionResult:
         result = asdict(self)
         result["ranked_tokens"] = [token.to_dict() for token in self.ranked_tokens]
         return result
+
+
+@dataclass
+class RowAttribution:
+    rank: int
+    row_position: int
+    text: str
+    raw_score: float
+    normalized_score: float
+    receptive_field_strategy: str
+    observed: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
