@@ -1,141 +1,753 @@
-# Implementation Plan: Post-hoc Changed-Line Ranking for JIT-VP Models
+# Implementation Plan: Provenance-Preserving Attribution and Changed-Line Ranking
 
-## 1. Objective
+## 1. Status and Scope Decision
 
-Implement an inference-only explanation pipeline that ranks changed lines inside a commit according to how strongly they contribute to a model's commit-level vulnerability prediction.
+This document intentionally separates the work into two stages.
 
-The task is not supervised line-level vulnerability localization. No line-level ground-truth labels are assumed. The system must therefore produce a ranked list of changed lines rather than predict whether each line is truly vulnerable.
+### COMPLETED BASELINE
 
-Target models and attribution methods:
+The inference-only JITFine token-attention baseline and hierarchical row
+Grad-CAM baseline for DeepJIT and Com are implemented.
 
-- **JITFine**: Transformer attention-based line ranking, following the general mechanism used by LineVul.
-- **DeepJIT**: one-dimensional Grad-CAM on the CNN branch that processes code changes.
-- **SimCom**: one-dimensional Grad-CAM on the CNN-based **Com** component only.
+The current datasets do not preserve reliable line-level provenance such as file path, hunk, old/new line number, or a stable mapping from every model token back to an original changed line. Therefore, the MVP must not claim to localize important source lines.
 
-The existing trained checkpoints must be reused. The implementation must not require retraining unless the current model code makes checkpoint-compatible inference impossible.
+The MVP output is a ranked list of observed code-change tokens and their attention scores. It must use the existing test data and existing trained checkpoints without retraining.
 
----
+### IMPLEMENTED / LINE-RANKING EXTENSION
 
-## 2. Scope
+Build a provenance-preserving preparation path from a local Git repository and
+an explicit commit SHA/URL list. It must retain canonical changed-line identity
+while separately reproducing the historical model serialization used by the
+existing checkpoints.
 
-### 2.1 Included
+- **JITFine:** aggregate observed token attention by verified changed line.
+- **DeepJIT:** compute within-row token Grad-CAM on the flattened merge input,
+  then aggregate observed token scores by verified changed line.
+- **SimCom/Com:** compute token-stage Grad-CAM inside each observed historical
+  patch row, then aggregate those positions by verified changed line.
+- Export file, hunk, old/new line number, coverage, truncation and alignment
+  status for every ranked line.
 
-The implementation must:
-
-1. Load existing trained checkpoints.
-2. Reconstruct the exact code-change input used by each model.
-3. Preserve a mapping from model tokens or CNN positions back to changed lines.
-4. Compute attribution scores at token or sequence-position level.
-5. Aggregate those scores into line-level scores.
-6. Rank changed lines within each commit.
-7. Export machine-readable and human-readable outputs.
-8. Support batch inference over a dataset split.
-9. Include faithfulness-oriented checks that do not require line-level ground truth.
-
-### 2.2 Excluded
-
-The implementation does not need to:
-
-- train a line-level classifier;
-- fine-tune any model for localization;
-- use vulnerable-line labels;
-- compute Top-k localization accuracy, IFA, MRR, MAP, or Recall@LOC against a line-level oracle;
-- claim that the highest-ranked line is the actual vulnerability root cause;
-- produce explanations for expert-feature-only components at line granularity.
+HTML heatmaps and intervention-based faithfulness remain deferred. A line must
+never be ranked unless its reconstructed model input passes exact alignment
+validation against the supplied dataset record.
 
 ---
 
-## 3. Terminology
+## 2. Objective
 
-Use the following terms consistently in code, documentation, and output files:
+### 2.1 MVP objective
 
-- **Commit-level prediction**: the original model output indicating whether a commit is vulnerable.
-- **Changed-line ranking**: the ordered list of added and deleted lines ranked by attribution score.
-- **Line score**: the aggregated attribution score assigned to one changed line.
-- **Explanation scope**: the part of the model being explained, such as the CodeBERT code branch or the Com CNN code branch.
-- **Covered line**: a changed line that is represented in the model input after preprocessing and truncation.
-- **Uncovered line**: a changed line excluded from model input, usually because of truncation.
+For each selected test commit:
 
-Avoid using language that implies ground-truth localization. Preferred task names:
+1. load the existing JITFine checkpoint;
+2. reproduce the exact normal inference input;
+3. request transformer attention without changing the prediction;
+4. isolate tokens located between the existing `<ADD>` and `<REMOVE>` boundaries;
+5. exclude message, special, separator, and padding tokens;
+6. compute a token-level attention score;
+7. rank the observed code-change tokens within the commit;
+8. export reproducible machine-readable results.
 
-- `post-hoc changed-line ranking`
-- `commit-level prediction explanation through changed-line ranking`
+The output answers:
 
----
+> Which observed code-change tokens received the highest attention from the JITFine CLS token?
 
-## 4. High-Level Pipeline
+It does not answer:
+
+> Which source line is truly vulnerable?
+
+### 2.2 Current line-ranking objective
+
+Generate line provenance from Git, reproduce the model input, and aggregate
+only attribution positions actually observed by the checkpoint:
 
 ```text
-Raw commit diff
+token attention scores
+    + verified token-to-line alignment
     ↓
-Canonical diff parsing
+line score aggregation
     ↓
-Model-specific preprocessing
-    ↓
-Token/position-to-line alignment
-    ↓
-Commit-level inference
-    ↓
-Model-specific attribution
-    ↓
-Attribution aggregation by changed line
-    ↓
-Within-commit normalization
-    ↓
-Changed-line ranking
-    ↓
-JSON / CSV / HTML export
+changed-line ranking
+```
+
+Existing checkpoints remain unchanged. DeepJIT requires token-stage Grad-CAM
+because its historical `merge` input flattens all changed lines into one model
+row; row-stage CAM alone cannot distinguish those lines.
+
+---
+
+## 3. Repository-Specific Facts
+
+The implementation must be based on the current repository rather than a generic LineVul/DeepJIT architecture.
+
+### 3.1 JITFine input is joint message and code input
+
+The current preprocessing constructs one transformer sequence:
+
+```text
+[CLS] message_tokens <ADD> added_tokens <REMOVE> removed_tokens [SEP]
+```
+
+JITFine does not have an independent CodeBERT code branch. The transformer CLS representation is also combined with manual commit features by the classifier.
+
+Use this scope metadata:
+
+```json
+{
+  "explanation_scope": "jitfine_code_tokens_within_joint_message_code_encoder_input",
+  "full_model_explanation": false,
+  "attribution_is_class_specific": false,
+  "excluded_model_inputs": ["manual_features"],
+  "excluded_sequence_regions": ["commit_message", "special_tokens", "padding"]
+}
+```
+
+Attention ranking is an attention-based model diagnostic. It must not be described as proof of causal importance or vulnerability.
+
+### 3.2 Current data has token-side boundaries but not verified line provenance
+
+The existing JITFine `code_change` value is parsed using `<ADD>` and `<REMOVE>`. These markers allow the MVP to label code tokens as:
+
+- `added`;
+- `removed`.
+
+They do not provide a reliable mapping to:
+
+- source file;
+- diff hunk;
+- old/new line number;
+- original changed line.
+
+The MVP must preserve only the information that can be established from the actual model input.
+
+### 3.3 Manual-feature preprocessing affects prediction preservation
+
+The current JITFine dataset scales manual features using all rows in the supplied feature file. A one-row feature file would therefore change the feature values and may change the prediction.
+
+For existing checkpoints, token attribution must preprocess the supplied full test feature file exactly as normal evaluation does, then select commits from the resulting dataset. Do not construct a one-row temporary feature dataset for single-commit localization.
+
+Record the feature-file identity and preprocessing context in the run metadata.
+
+### 3.4 DeepJIT and Com are hierarchical CNNs
+
+DeepJIT and SimCom/Com use a two-stage CNN:
+
+```text
+tokens within each input row
+    ↓ line-stage convolution and max pooling
+row representations
+    ↓ commit-stage convolution and max pooling
+commit representation
+```
+
+They are not flat Conv1d code branches. Their Grad-CAM design is retained only as a future prototype in Section 15.
+
+---
+
+## 4. Terminology
+
+Use these terms consistently.
+
+- **Commit-level prediction**: the original JITFine probability and predicted label.
+- **Observed token**: a non-padding token retained in the 512-token model input.
+- **Code-change token**: an observed token after `<ADD>` and before/after `<REMOVE>`, classified as added or removed.
+- **Token attention score**: attention assigned from CLS to a code-change token under the selected aggregation strategy.
+- **Token rank**: the within-commit ordering of code-change tokens by attention score.
+- **Truncated token**: a token produced before the model's 510-content-token truncation boundary but omitted from the final input.
+- **Explanation scope**: code tokens within the joint message/code transformer sequence.
+- **Line attribution**: a future aggregation of verified token scores by original changed line.
+
+Avoid the following terms for MVP output:
+
+- vulnerable token;
+- vulnerable line;
+- root-cause line;
+- line localization result.
+
+Preferred task name:
+
+```text
+JITFine token-level code-change attention baseline
 ```
 
 ---
 
-## 5. Proposed Source Structure
+## 5. MVP Pipeline
+
+```text
+Existing test feature file + existing test code file
+    ↓
+Existing JITFine preprocessing over the full test context
+    ↓
+Exact input_ids, attention_mask, manual_features
+    ↓
+Normal prediction + optional transformer attentions
+    ↓
+Identify message / ADD / REMOVE / special / padding regions
+    ↓
+CLS-to-token attention aggregation
+    ↓
+Filter to observed added and removed code tokens
+    ↓
+Within-commit token ranking
+    ↓
+JSON / JSONL / CSV export
+```
+
+No raw-diff parser is required for the MVP.
+
+---
+
+## 6. Proposed Source Structure
+
+Adapt names to the repository's existing layout.
 
 ```text
 vulguard_lite/
-├── localization/
+├── attribution/
 │   ├── __init__.py
 │   ├── schemas.py
-│   ├── diff_parser.py
-│   ├── alignment.py
-│   ├── aggregation.py
-│   ├── normalization.py
-│   ├── base.py
-│   ├── attention.py
-│   ├── gradcam_1d.py
-│   ├── jitfine_localizer.py
-│   ├── deepjit_localizer.py
-│   ├── simcom_localizer.py
-│   ├── faithfulness.py
+│   ├── jitfine_attention.py
+│   ├── token_regions.py
+│   ├── ranking.py
 │   ├── export.py
-│   └── visualization.py
-├── commands/
-│   └── localize.py
-└── tests/
-    ├── test_diff_parser.py
-    ├── test_alignment.py
-    ├── test_aggregation.py
-    ├── test_jitfine_attention.py
-    ├── test_gradcam_1d.py
-    ├── test_simcom_components.py
-    ├── test_checkpoint_compatibility.py
-    └── test_prediction_preservation.py
+│   └── validation.py
+├── tests/
+│   ├── test_jitfine_token_regions.py
+│   ├── test_jitfine_attention.py
+│   ├── test_token_ranking.py
+│   ├── test_prediction_preservation.py
+│   └── test_token_export.py
+└── cli.py
 ```
 
-Adapt the paths to the current repository layout instead of forcing this exact structure if the project already has an established architecture.
+Do not create the full future `localization/` framework until line provenance is available. Keep the MVP small and checkpoint-compatible.
 
 ---
 
-## 6. Shared Data Schemas
+## 7. MVP Data Schemas
 
-Create reusable dataclasses or equivalent typed structures.
-
-### 6.1 Diff line
+### 7.1 Token attribution
 
 ```python
 from dataclasses import dataclass
 
 
+@dataclass
+class TokenAttribution:
+    rank: int
+    sequence_position: int
+    token: str
+    token_id: int
+    change_type: str  # added or removed
+    raw_score: float
+    normalized_score: float
+    layer_strategy: str
+    observed: bool
+```
+
+`sequence_position` is the position in the exact padded model input. It is not a source-code character offset or source-line coordinate.
+
+### 7.2 Token attribution result
+
+```python
+@dataclass
+class TokenAttributionResult:
+    commit_id: str
+    model_name: str
+    checkpoint_id: str
+    prediction_score: float
+    predicted_label: int
+    threshold: float
+    attribution_method: str
+    attention_strategy: str
+    explanation_scope: str
+    attribution_is_class_specific: bool
+    ranked_tokens: list[TokenAttribution]
+    observed_sequence_tokens: int
+    observed_code_tokens: int
+    observed_added_tokens: int
+    observed_removed_tokens: int
+    pre_truncation_content_tokens: int
+    truncated_content_tokens: int
+    truncated: bool
+    metadata: dict
+```
+
+The implementation may use typed dictionaries or Pydantic instead of dataclasses if that better matches the repository.
+
+---
+
+## 8. Exact Preprocessing and Token-Region Tracking
+
+### 8.1 Core rule
+
+Do not introduce a second tokenization pipeline for attribution.
+
+Extend the existing `convert_examples_to_features` path with an optional, backward-compatible argument:
+
+```python
+def convert_examples_to_features(
+    item,
+    pad_token=0,
+    mask_padding_with_zero=True,
+    return_metadata=False,
+):
+    ...
+```
+
+Training and normal evaluation retain the existing return behavior when `return_metadata=False`.
+
+Attribution mode returns the same tensors plus metadata derived during the same preprocessing call.
+
+### 8.2 Required preprocessing metadata
+
+Record before and after truncation:
+
+```python
+{
+    "tokens_before_truncation": list[str],
+    "tokens_after_truncation": list[str],
+    "sequence_regions": list[str],
+    "add_marker_position": int | None,
+    "remove_marker_position": int | None,
+    "pre_truncation_content_tokens": int,
+    "truncated_content_tokens": int,
+    "truncated": bool,
+}
+```
+
+Allowed region values:
+
+```text
+cls
+message
+add_marker
+added
+remove_marker
+removed
+sep
+padding
+```
+
+Region assignment must happen while constructing `input_tokens`, not by searching decoded text after inference.
+
+### 8.3 Malformed input
+
+The current regex path can leave `added_part` or `removed_part` undefined when markers are malformed. Attribution mode must validate both markers explicitly and return a structured skip reason instead of crashing the batch.
+
+Example:
+
+```json
+{
+  "commit_id": "...",
+  "status": "skipped",
+  "reason": "missing_or_malformed_add_remove_markers"
+}
+```
+
+Do not silently change the serialization of valid existing records.
+
+### 8.4 Truncation
+
+The current model keeps at most 510 content tokens plus CLS and SEP. Report:
+
+- total content-token count before truncation;
+- number of omitted tokens;
+- whether the omitted region contains added or removed code tokens when determinable.
+
+Do not emit fabricated zero scores for truncated tokens. They were not observed by the model and should not appear in `ranked_tokens`.
+
+---
+
+## 9. JITFine Forward API
+
+Modify the forward path without renaming or reshaping parameters.
+
+Preferred optional structured-output API:
+
+```python
+def forward(
+    self,
+    inputs_ids,
+    attn_masks,
+    manual_features=None,
+    labels=None,
+    output_attentions=False,
+    return_attribution_data=False,
+):
+    ...
+```
+
+When `return_attribution_data=True`, return:
+
+```python
+{
+    "probability": probability,
+    "logit": logit,
+    "attentions": outputs.attentions,
+    "loss": loss_or_none,
+}
+```
+
+Legacy callers must continue receiving the current return types unless they opt into the new structured output.
+
+The encoder call should explicitly request a return dictionary in attribution mode:
+
+```python
+outputs = self.encoder(
+    input_ids=inputs_ids,
+    attention_mask=attn_masks,
+    output_attentions=output_attentions,
+    return_dict=True,
+)
+```
+
+Existing state dictionaries must load without missing or unexpected model parameters.
+
+---
+
+## 10. Attention Strategy
+
+### 10.1 MVP default
+
+Use last-layer CLS-to-token attention averaged across heads:
+
+```python
+# last_attention: [batch, heads, seq, seq]
+token_scores = last_attention[:, :, 0, :].mean(dim=1)
+```
+
+Default configuration:
+
+```yaml
+attribution:
+  method: attention
+  attention_strategy: last_layer_cls_mean
+  aggregate_heads: mean
+```
+
+This is closest to the attention data already exposed by the current model and is the smallest checkpoint-compatible baseline.
+
+### 10.2 Optional comparison strategies
+
+Implement only after the default baseline works:
+
+- `all_layers_cls_mean`;
+- `attention_rollout`.
+
+Store the strategy in every result. Results from different strategies must not be mixed without labeling.
+
+### 10.3 Filtering
+
+Rank only tokens whose region is `added` or `removed`.
+
+Exclude:
+
+- CLS and SEP;
+- padding;
+- commit-message tokens;
+- `<ADD>` and `<REMOVE>` markers;
+- tokens outside the attention mask.
+
+### 10.4 Interpretation limit
+
+CLS attention is not class-specific and is not guaranteed to be a faithful causal explanation. Documentation and exports must call it an attention diagnostic or baseline, not a vulnerability probability per token.
+
+---
+
+## 11. Token Score Normalization and Ranking
+
+### 11.1 Raw score
+
+Preserve the raw attention value for every observed code token.
+
+### 11.2 Display normalization
+
+For within-commit visualization and comparison, use min-max normalization over observed code tokens:
+
+```python
+normalized = (score - min_score) / (max_score - min_score + 1e-12)
+```
+
+Normalization does not replace the raw score.
+
+### 11.3 Ranking
+
+Sort within each commit by:
+
+1. raw score descending;
+2. sequence position ascending.
+
+This produces deterministic results.
+
+### 11.4 Repeated subword tokens
+
+Do not merge repeated token strings. Each token occurrence is a separate observation identified by `sequence_position`.
+
+Subword-to-word merging is optional and deferred. The canonical MVP artifact remains token-occurrence level.
+
+### 11.5 Degenerate cases
+
+Handle explicitly:
+
+- no observed code tokens;
+- only added or only removed tokens;
+- all equal attention scores;
+- NaN or infinite scores;
+- missing attention tensors;
+- malformed markers.
+
+---
+
+## 12. CLI
+
+Integrate `localize` or `attribute` as a subcommand in the existing `cli.py` parser. Prefer `attribute` because the MVP does not localize source lines.
+
+Example:
+
+```bash
+python -m vulguard_lite attribute \
+  -model jitfine \
+  -model_path <checkpoint-directory> \
+  -test_set <features.jsonl,code.jsonl> \
+  -hyperparameters models/jitfine/hyperparameters.json \
+  -repo_language C \
+  -device cpu \
+  -output_dir results/token_attention
+```
+
+Required options:
+
+```text
+-model jitfine
+-model_path
+-test_set
+-hyperparameters
+-repo_language
+-device
+-threshold
+-output_dir
+-attention_strategy
+-top_k
+-commit_id
+-only_predicted_vulnerable
+-all_commits
+-overwrite
+-resume
+```
+
+Rules:
+
+- MVP accepts only `jitfine`.
+- `-commit_id` selects a commit after preprocessing the full supplied test files.
+- It must not create a one-row feature file.
+- `-only_predicted_vulnerable` and `-all_commits` are mutually exclusive selection modes.
+- A malformed commit must not stop the full batch.
+- Batch output order must follow stable dataset order.
+
+Add deterministic sharding later if required for PBS execution:
+
+```text
+-shard_index
+-num_shards
+```
+
+---
+
+## 13. MVP Output
+
+### 13.1 Run-level files
+
+```text
+<output-dir>/
+├── run_metadata.json
+├── token_attributions.jsonl
+├── token_attributions.csv
+└── summary.json
+```
+
+Per-commit folders and line heatmaps are deferred until line provenance is available.
+
+### 13.2 JSONL record
+
+```json
+{
+  "commit_id": "abc123",
+  "status": "succeeded",
+  "model": "jitfine",
+  "prediction_score": 0.873,
+  "predicted_label": 1,
+  "threshold": 0.5,
+  "attribution_method": "attention",
+  "attention_strategy": "last_layer_cls_mean",
+  "explanation_scope": "jitfine_code_tokens_within_joint_message_code_encoder_input",
+  "full_model_explanation": false,
+  "attribution_is_class_specific": false,
+  "observed_code_tokens": 311,
+  "observed_added_tokens": 180,
+  "observed_removed_tokens": 131,
+  "pre_truncation_content_tokens": 724,
+  "truncated_content_tokens": 214,
+  "truncated": true,
+  "ranked_tokens": [
+    {
+      "rank": 1,
+      "sequence_position": 87,
+      "token": "Ġbuffer",
+      "token_id": 19228,
+      "change_type": "added",
+      "raw_score": 0.0182,
+      "normalized_score": 1.0,
+      "observed": true
+    }
+  ]
+}
+```
+
+Tokenizer-native token strings should be preserved. A decoded display form may be added as a separate field; it must not replace the canonical token string.
+
+### 13.3 CSV columns
+
+```text
+commit_id,model,prediction_score,predicted_label,attention_strategy,rank,sequence_position,token,token_id,change_type,raw_score,normalized_score,truncated
+```
+
+### 13.4 Run metadata
+
+Record:
+
+- checkpoint path and fingerprint;
+- hyperparameter-file fingerprint;
+- feature and code input paths/fingerprints;
+- device;
+- threshold;
+- attention strategy;
+- package versions;
+- random seed;
+- run timestamp;
+- repository commit hash when available.
+
+Use atomic writes. Resume should validate fingerprints and configuration before reusing existing results.
+
+---
+
+## 14. MVP Validation and Tests
+
+### 14.1 Prediction preservation
+
+Attention mode must preserve the normal evaluation probability:
+
+```python
+abs(normal_probability - attention_probability) < tolerance
+```
+
+Suggested tolerance:
+
+```text
+CPU: 1e-6
+GPU: 1e-5
+```
+
+The comparison must use:
+
+- the same checkpoint;
+- `model.eval()`;
+- identical model tensors;
+- the same full-test feature preprocessing context.
+
+### 14.2 Golden preprocessing fixtures
+
+Create small fixtures that assert:
+
+- exact `input_tokens`;
+- exact `input_ids`;
+- exact attention mask;
+- exact region per sequence position;
+- exact truncation boundary;
+- unchanged legacy preprocessing return value.
+
+### 14.3 Attention tests
+
+Verify:
+
+- attention tensor shape is `[batch, layers, heads, seq, seq]` or the documented tuple equivalent;
+- last-layer CLS extraction returns `[batch, seq]`;
+- head averaging is correct;
+- message, markers, special tokens, and padding are excluded;
+- every exported position refers to the exact model input;
+- repeated tokens remain distinct occurrences;
+- deterministic output in evaluation mode;
+- existing checkpoint loads without model-parameter incompatibility.
+
+### 14.4 Export tests
+
+Verify:
+
+- JSONL is valid and resume-safe;
+- CSV escapes tokenizer strings correctly;
+- ranking is deterministic;
+- raw and normalized scores are finite;
+- truncated tokens are not assigned zero scores;
+- skipped commits contain explicit reasons.
+
+### 14.5 Checkpoint loading
+
+Create an inference-only checkpoint loader that loads model weights with `map_location` and does not require optimizer or scheduler state to run attribution.
+
+It may support both full training checkpoints and model-state-only checkpoints. Training resume behavior remains unchanged.
+
+---
+
+## 15. IMPLEMENTED: Provenance-Preserving Line Ranking
+
+This section is the current implementation contract.
+
+### 15.1 Git input and provenance contract
+
+Add a `prepare-lines` command accepting:
+
+```text
+-repo_path <local-clone>
+-commit_id <sha> | -commit_urls <txt-or-jsonl>
+-output_dir
+```
+
+URLs must be normalized to full 40-character SHAs from the local clone. For
+each non-binary changed file, parse the first-parent unified diff and retain:
+
+- old and new file paths;
+- hunk index and hunk header;
+- diff position;
+- old and new line numbers;
+- exact raw line text and normalized model text;
+- real Git change type (`added` or `deleted`);
+- historical model marker, stored separately from real change type.
+
+Before assigning any attribution to a line, code must:
+
+1. parse the source diff;
+2. reproduce the historical `code_change` serialization;
+3. verify the reconstructed serialization against the dataset record;
+4. reproduce tokenization;
+5. verify exact `input_ids` equality;
+6. skip commits with ambiguous or failed alignment.
+
+Suggested future metadata:
+
+```json
+{
+  "source_provenance": "raw_diff_sidecar",
+  "alignment_status": "exact",
+  "serialized_input_match": true,
+  "model_input_ids_match": true
+}
+```
+
+### 15.2 Line schema
+
+```python
 @dataclass
 class DiffLine:
     line_id: int
@@ -144,197 +756,36 @@ class DiffLine:
     diff_position: int
     old_line_no: int | None
     new_line_no: int | None
-    change_type: str  # added, deleted, context
-    text: str
-    eligible_for_ranking: bool
-```
-
-### 6.2 Token or model-position alignment
-
-```python
-@dataclass
-class PositionAlignment:
-    position: int
-    line_id: int | None
-    char_start: int | None
-    char_end: int | None
-    is_special_token: bool
-    is_padding: bool
-    is_code_change: bool
-```
-
-### 6.3 Ranked line
-
-```python
-@dataclass
-class RankedLine:
-    rank: int
-    line_id: int
-    file_path: str
-    hunk_id: int
-    old_line_no: int | None
-    new_line_no: int | None
     change_type: str
     text: str
-    raw_score: float
-    normalized_score: float
-    token_count: int
-    covered: bool
+    eligible_for_ranking: bool
+    normalized_text: str
+    model_markers: dict[str, str]
 ```
 
-### 6.4 Localization result
+### 15.3 Historical serialization and exact alignment
 
-```python
-@dataclass
-class LocalizationResult:
-    commit_id: str
-    model_name: str
-    attribution_method: str
-    explanation_scope: str
-    prediction_score: float
-    predicted_label: int
-    target_class: int
-    ranked_lines: list[RankedLine]
-    total_changed_lines: int
-    covered_changed_lines: int
-    coverage_ratio: float
-    truncated: bool
-    metadata: dict
+The preparation output must include both canonical provenance and the exact
+historical serializations:
+
+```text
+merge: <ADD> <all Git-added tokens> <REMOVE> <all Git-deleted tokens>\n
+patch: one historical change block per newline
 ```
 
----
+The two historical serializers are inconsistent: DeepJIT/JITFine `merge`
+uses `<ADD>` for Git-added lines and `<REMOVE>` for Git-deleted lines, while
+SimCom's legacy `patch` rows put Git-deleted lines after `<ADD>` and Git-added
+lines after `<REMOVE>`. Preserve both directions in `model_markers` (keys
+`merge` and `patch`) for checkpoint compatibility; `change_type` always follows
+Git semantics. Never infer one from the other.
 
-## 7. Diff Parsing and Canonical Line Representation
+Alignment must be constructed while serialization is emitted, using stable
+line IDs and token occurrence ranges. Never align later by token text because
+repeated lines and tokens are ambiguous. Before ranking, verify the reconstructed
+serialization and resulting model tensor/token IDs against the supplied JSONL.
 
-### 7.1 Requirements
-
-Implement a parser that:
-
-1. Separates files in a multi-file diff.
-2. Parses hunk headers of the form:
-
-   ```text
-   @@ -old_start,old_count +new_start,new_count @@
-   ```
-
-3. Tracks old and new line numbers independently.
-4. Labels each line as:
-   - `added`
-   - `deleted`
-   - `context`
-5. Preserves the exact text used by the model preprocessing pipeline.
-6. Assigns a stable `line_id` across the entire commit.
-7. Marks only added and deleted lines as rankable by default.
-
-### 7.2 Candidate-line policy
-
-Default configuration:
-
-```yaml
-candidate_lines:
-  include_added: true
-  include_deleted: true
-  include_context: false
-```
-
-Context lines may still receive internal attribution for debugging, but they must not appear in the main ranked list unless explicitly enabled.
-
-### 7.3 Edge cases
-
-Handle at least:
-
-- empty lines;
-- newline-at-end-of-file markers;
-- file creation and deletion;
-- renamed files;
-- binary files;
-- diffs with malformed or absent hunk headers;
-- commits with no eligible changed lines;
-- commits affecting multiple files;
-- truncated model input.
-
-Binary files and unparseable sections should be skipped with explicit metadata rather than crashing the full batch.
-
----
-
-## 8. Alignment Between Model Input and Diff Lines
-
-This is the most important shared component.
-
-### 8.1 Core rule
-
-Do not tokenize or preprocess the diff using a new pipeline that differs from training or normal inference.
-
-The localization code must reuse the exact existing preprocessing functions for each model and extend them to optionally return alignment metadata.
-
-### 8.2 Suggested API
-
-Add an optional argument:
-
-```python
-def preprocess_commit(..., return_alignment: bool = False):
-    ...
-```
-
-Normal training and evaluation must remain unchanged:
-
-```python
-return_alignment=False
-```
-
-Localization mode:
-
-```python
-return_alignment=True
-```
-
-Suggested returned structure:
-
-```python
-{
-    "model_inputs": {...},
-    "lines": list[DiffLine],
-    "position_alignment": list[PositionAlignment],
-    "covered_line_ids": list[int],
-    "uncovered_line_ids": list[int],
-    "truncated": bool,
-}
-```
-
-### 8.3 Transformer alignment
-
-For JITFine, prefer tokenizer offset mappings when supported:
-
-```python
-encoded = tokenizer(
-    text,
-    return_offsets_mapping=True,
-    truncation=True,
-    ...,
-)
-```
-
-Map every non-special token span back to the corresponding diff line using character intervals in the exact serialized code-change string.
-
-If the tokenizer is slow or does not return offsets, reconstruct alignment using the existing tokenization logic and explicit line separators. Add tests for subword tokens and repeated source text.
-
-### 8.4 CNN alignment
-
-For DeepJIT and Com, determine exactly what one sequence position represents in the current implementation:
-
-- token;
-- word;
-- line;
-- nested token position inside a line;
-- flattened code-change sequence.
-
-Build the alignment against the actual tensor fed into the embedding layer. Do not infer alignment from a separate reconstruction after inference.
-
-### 8.5 Truncation
-
-Never treat an uncovered line as score zero.
-
-Use:
+Unobserved/truncated lines must use null scores rather than zero:
 
 ```json
 {
@@ -344,377 +795,28 @@ Use:
 }
 ```
 
-The primary ranked list should contain only covered eligible lines. Export uncovered lines separately in metadata.
+### 15.4 Model-specific attribution and line aggregation
 
----
+JITFine uses its existing code-token attention. DeepJIT hooks
+`convs_code_line`, projects every kernel position through its exact token
+receptive field, and combines that with gradients flowing through the
+commit-stage CNN. Com uses the existing `convs_code_file` CAM and maps an
+observed patch row to the changed line IDs emitted into that row.
 
-## 9. JITFine Attention-Based Line Ranking
+Aggregate observed positions using configurable methods:
 
-### 9.1 Explanation scope
+- `sum`;
+- `mean`;
+- `max`;
+- `length_normalized_sum`.
 
-Explain only the CodeBERT branch processing code changes.
+Store at least sum, mean, maximum, and token count so line-length bias can be analyzed.
 
-Do not claim that the line ranking fully explains the combined JITFine prediction when the final classifier also uses commit messages or expert features.
+Suggested initial default: `sum`, with mandatory comparison against `mean`.
 
-Required metadata:
+### 15.5 Line-level outputs
 
-```json
-{
-  "explanation_scope": "jitfine_codebert_code_change_branch",
-  "full_model_explanation": false
-}
-```
-
-### 9.2 Checkpoint compatibility
-
-Modify the forward path only by adding optional output control. Do not rename or reshape parameters.
-
-Suggested signature:
-
-```python
-def forward(
-    self,
-    ...,
-    output_attentions: bool = False,
-    return_localization_data: bool = False,
-):
-    ...
-```
-
-Call CodeBERT with:
-
-```python
-outputs = self.codebert(
-    input_ids=code_input_ids,
-    attention_mask=code_attention_mask,
-    output_attentions=output_attentions,
-    return_dict=True,
-)
-```
-
-Existing checkpoints should load using the same state dictionary.
-
-### 9.3 Baseline attention strategy
-
-Use CLS-to-token attention averaged across heads and layers:
-
-```python
-layer_scores = []
-for layer_attention in attentions:
-    # [batch, heads, seq, seq]
-    cls_to_tokens = layer_attention[:, :, 0, :]
-    layer_scores.append(cls_to_tokens.mean(dim=1))
-
-token_scores = torch.stack(layer_scores, dim=0).mean(dim=0)
-```
-
-Default configuration:
-
-```yaml
-jitfine:
-  method: attention
-  attention_strategy: all_layers_cls_mean
-  aggregate_heads: mean
-  aggregate_layers: mean
-```
-
-Also implement optional strategies for later comparison:
-
-- `last_layer_cls_mean`
-- `attention_rollout`
-
-Do not make these optional variants block the baseline implementation.
-
-### 9.4 Token filtering
-
-Set non-code scores to zero or exclude them before line aggregation:
-
-- CLS token;
-- SEP token;
-- padding;
-- artificial separators;
-- commit-message tokens;
-- expert-feature placeholders;
-- any token not mapped to a changed line.
-
-### 9.5 Token-to-line aggregation
-
-Implement:
-
-- `sum`
-- `mean`
-- `max`
-- `length_normalized_sum`
-
-Default:
-
-```yaml
-line_aggregation: sum
-```
-
-Store at least:
-
-- summed score;
-- mean token score;
-- token count.
-
-This allows later analysis of whether long lines are favored by simple summation.
-
----
-
-## 10. DeepJIT Grad-CAM Line Ranking
-
-### 10.1 Explanation scope
-
-Apply Grad-CAM only to the CNN branch that processes code changes.
-
-Do not use the message CNN for the requested line ranking.
-
-Required metadata:
-
-```json
-{
-  "explanation_scope": "deepjit_code_change_cnn",
-  "full_model_explanation": false
-}
-```
-
-### 10.2 Target layers
-
-Inspect the actual implementation and identify every convolution branch operating on code changes before max pooling.
-
-Typical pattern:
-
-```text
-Embedding
-├── Conv1d kernel=3
-├── Conv1d kernel=4
-└── Conv1d kernel=5
-    ↓
-Global max pooling
-```
-
-Register hooks on the convolution outputs before pooling.
-
-### 10.3 Reusable GradCAM1D implementation
-
-Create a class that:
-
-1. registers a forward hook for activations;
-2. registers a backward hook for gradients;
-3. runs forward inference;
-4. backpropagates from the vulnerable-class logit;
-5. computes one-dimensional Grad-CAM;
-6. interpolates the CAM to the model input sequence length;
-7. removes hooks safely.
-
-Formula implementation:
-
-```python
-weights = gradients.mean(dim=-1, keepdim=True)
-cam = torch.relu((weights * activations).sum(dim=1))
-```
-
-Use the vulnerable-class logit, not the thresholded prediction and preferably not the post-sigmoid probability.
-
-### 10.4 Multi-kernel aggregation
-
-For each convolution branch:
-
-1. compute a CAM;
-2. resize it to the original input sequence length;
-3. normalize only after all branches are aligned;
-4. aggregate branches.
-
-Default:
-
-```yaml
-deepjit:
-  method: gradcam
-  branch_aggregation: mean
-```
-
-Optional later variants:
-
-- `max`
-- gradient-norm-weighted mean
-
-### 10.5 Pooling sanity check
-
-Because global max pooling can create sparse contributions, also expose the max-pooling argmax positions for debugging.
-
-This is not the primary explanation method. It is a validation aid to confirm that Grad-CAM highlights positions actually selected by the CNN filters.
-
----
-
-## 11. SimCom Com-Component Grad-CAM
-
-### 11.1 Explanation scope
-
-SimCom contains:
-
-- `Sim`: expert-feature model;
-- `Com`: CNN-based component;
-- final combination of their predictions.
-
-Only the Com code-change CNN can be mapped to source lines.
-
-Required metadata:
-
-```json
-{
-  "explanation_scope": "simcom_com_code_change_cnn",
-  "localization_component": "Com",
-  "full_model_explanation": false
-}
-```
-
-### 11.2 Expose component scores
-
-Modify inference to optionally return:
-
-```python
-{
-    "sim_score": sim_score,
-    "com_score": com_score,
-    "final_score": final_score,
-}
-```
-
-Do not alter the original final score calculation.
-
-### 11.3 Grad-CAM implementation
-
-Reuse the DeepJIT GradCAM1D module against the Com code-change CNN.
-
-Do not run Grad-CAM against the full SimCom wrapper if the wrapper simply combines Sim and Com predictions. This would only scale the gradient and would not add line-level information.
-
-### 11.4 Component dominance metadata
-
-Report whether the final prediction is mostly supported by Sim or Com.
-
-A simple initial diagnostic:
-
-```python
-sim_relevance = abs(sim_score - 0.5)
-com_relevance = abs(com_score - 0.5)
-dominant_component = "Sim" if sim_relevance > com_relevance else "Com"
-```
-
-Output:
-
-```json
-{
-  "sim_score": 0.41,
-  "com_score": 0.83,
-  "final_score": 0.62,
-  "dominant_component": "Com",
-  "line_ranking_reliability": "normal"
-}
-```
-
-If Sim is dominant, set:
-
-```json
-{
-  "line_ranking_reliability": "limited_due_to_sim_component"
-}
-```
-
-This diagnostic is heuristic and must be documented as such.
-
----
-
-## 12. Line-Score Normalization and Ranking
-
-### 12.1 Raw aggregation
-
-For every covered eligible line, aggregate all mapped token or position scores.
-
-### 12.2 Within-commit normalization
-
-Normalize scores independently inside each commit:
-
-```python
-normalized = (score - min_score) / (max_score - min_score + 1e-12)
-```
-
-Do not normalize across the full dataset because the task is to rank lines within one commit.
-
-### 12.3 Ranking
-
-Sort by normalized score descending.
-
-Tie-breaking order:
-
-1. higher raw score;
-2. lower diff position;
-3. lower line ID.
-
-This guarantees deterministic output.
-
-### 12.4 Degenerate cases
-
-Handle:
-
-- all raw scores equal;
-- all raw scores zero;
-- one eligible covered line;
-- no eligible covered lines;
-- NaN or infinite attribution values.
-
-For all-equal scores, set normalized scores consistently, for example to `0.0`, and preserve deterministic diff order.
-
----
-
-## 13. CLI Requirements
-
-Implement a command similar to:
-
-```bash
-python -m vulguard_lite localize \
-  --model jitfine \
-  --checkpoint <checkpoint_or_hf_path> \
-  --dataset linux \
-  --split test \
-  --output-dir results/localization/jitfine/linux
-```
-
-Required options:
-
-```text
---model {jitfine,deepjit,simcom}
---checkpoint
---dataset
---split
---output-dir
---device
---batch-size
---target-class
---line-aggregation
---only-predicted-vulnerable
---only-true-positive
---all-commits
---top-k
---overwrite
---resume
-```
-
-Rules:
-
-- `--only-true-positive` uses commit-level ground-truth labels only.
-- `--only-predicted-vulnerable` filters by the model's commit-level prediction.
-- `--all-commits` runs localization for every commit.
-- Make these three selection modes mutually exclusive.
-- Batch mode must continue after one malformed commit and log the failure.
-
-Also support one-commit inference by commit ID or input JSON if practical in the current repository.
-
----
-
-## 14. Output Format
-
-For each commit:
+Future artifacts may include:
 
 ```text
 <output-dir>/<commit-id>/
@@ -724,524 +826,174 @@ For each commit:
 └── heatmap.html
 ```
 
-### 14.1 `prediction.json`
+The HTML must show all changed lines and clearly mark lines not observed by the model.
 
-```json
-{
-  "commit_id": "abc123",
-  "model": "jitfine",
-  "prediction_score": 0.873,
-  "predicted_label": 1,
-  "target_class": 1,
-  "attribution_method": "attention",
-  "explanation_scope": "jitfine_codebert_code_change_branch",
-  "total_changed_lines": 52,
-  "eligible_changed_lines": 47,
-  "covered_changed_lines": 21,
-  "coverage_ratio": 0.4468,
-  "truncated": true,
-  "uncovered_line_ids": [22, 23, 24]
-}
-```
+### 15.6 Coverage and truncation
 
-### 14.2 `ranked_lines.json`
+Report row and token coverage independently. DeepJIT normally observes one
+flattened content row and at most `code_length` tokens. Com observes at most
+`code_line` patch rows and `code_length` tokens per row. JITFine observes at
+most 510 joint content tokens. Unobserved lines use null scores and never enter
+the ranked list.
 
-```json
-{
-  "commit_id": "abc123",
-  "ranked_lines": [
-    {
-      "rank": 1,
-      "line_id": 8,
-      "file_path": "crypto/x509/x509_vfy.c",
-      "hunk_id": 0,
-      "old_line_no": null,
-      "new_line_no": 242,
-      "change_type": "added",
-      "text": "if (ctx == NULL) return 0;",
-      "raw_score": 0.182,
-      "normalized_score": 1.0,
-      "token_count": 7,
-      "covered": true
-    }
-  ]
-}
-```
+### 15.7 SimCom diagnostics
 
-### 14.3 CSV columns
+The current final probability is the mean of Sim and Com probabilities. Do not report a `dominant_component` based on distance from 0.5; confidence margin is not component contribution.
 
-```text
-commit_id,model,rank,line_id,file_path,hunk_id,old_line_no,new_line_no,change_type,text,raw_score,normalized_score,token_count,covered
-```
+Instead report:
 
-### 14.4 HTML heatmap
+- `sim_score`;
+- `com_score`;
+- `final_score`;
+- component agreement/disagreement;
+- whether Com supports the final predicted class;
+- that line/token localization covers Com only.
 
-Show:
+### 15.8 DEFERRED: intervention-based faithfulness
 
-- commit ID;
-- model;
-- commit-level prediction score;
-- attribution method;
-- explanation scope;
-- coverage and truncation information;
-- file and hunk boundaries;
-- diff markers;
-- line rank;
-- normalized score;
-- clear marker for uncovered lines.
+Line masking should be called an intervention because padding or `<NULL>` embeddings are not guaranteed to be neutral in CNN models.
 
-Do not hide uncovered lines. Render them with a label such as `not observed by model`.
+Future comprehensiveness and sufficiency tests must record:
+
+- replacement strategy;
+- affected positions;
+- whether sequence length was preserved;
+- original and intervened probabilities;
+- random/first/longest baselines;
+- multiple random seeds.
 
 ---
 
-## 15. Faithfulness Checks Without Line-Level Ground Truth
+## 16. Implementation Phases
 
-These checks do not prove that ranked lines are truly vulnerable. They test whether the ranking reflects the model's own prediction behavior.
+### Phase 0: Audit and fixtures — COMPLETED
 
-### 15.1 Prediction preservation
-
-Attribution mode must not change normal inference output.
-
-```python
-abs(original_score - localization_score) < tolerance
-```
-
-Suggested tolerance:
-
-```text
-1e-6 on CPU
-1e-5 on GPU
-```
-
-### 15.2 Comprehensiveness
-
-Mask the top-k ranked lines and rerun inference:
-
-```text
-Comprehensiveness@k = original_score - score_without_top_k
-```
-
-Larger positive values indicate that top-ranked lines were important to the prediction.
-
-Evaluate for configurable values such as:
-
-```text
-k ∈ {1, 3, 5, 10}
-```
-
-### 15.3 Sufficiency
-
-Retain only top-k ranked lines, mask other eligible changed lines, and rerun inference:
-
-```text
-Sufficiency@k = original_score - score_with_only_top_k
-```
-
-Smaller values indicate that top-ranked lines preserve more of the original prediction.
-
-### 15.4 Masking policy
-
-Do not delete source lines and rebuild an arbitrary new diff unless that matches the original model preprocessing.
-
-Prefer masking at the model-input level:
-
-- replace token IDs with the tokenizer mask token where supported;
-- otherwise use padding or unknown tokens while preserving sequence length;
-- preserve special tokens and segment boundaries;
-- for CNN inputs, replace positions with the model's padding index or a documented neutral representation.
-
-The masking strategy must be model-specific and recorded in output metadata.
-
-### 15.5 Baselines
-
-Compare attribution ranking against:
-
-- random changed lines;
-- first-k changed lines;
-- longest-k changed lines;
-- optionally max-pooling activation positions for CNN models.
-
-Use several random repeats and a fixed seed.
-
-### 15.6 Stability
-
-Provide optional utilities for:
-
-- top-k overlap;
-- Spearman correlation;
-- Kendall's tau;
-- comparison across checkpoints or repeated runs.
-
-Do not block the core implementation on stability analysis.
-
----
-
-## 16. Configuration
-
-Add a localization section to the existing config system.
-
-```yaml
-localization:
-  target_class: 1
-  candidate_lines:
-    include_added: true
-    include_deleted: true
-    include_context: false
-
-  line_aggregation: sum
-  normalization: minmax_within_commit
-  top_k: 20
-
-  jitfine:
-    method: attention
-    attention_strategy: all_layers_cls_mean
-    aggregate_heads: mean
-    aggregate_layers: mean
-
-  deepjit:
-    method: gradcam
-    target_branch: code
-    branch_aggregation: mean
-
-  simcom:
-    method: gradcam
-    component: com
-    target_branch: code
-    branch_aggregation: mean
-    report_component_scores: true
-
-  faithfulness:
-    enabled: false
-    k_values: [1, 3, 5, 10]
-    random_repeats: 20
-    seed: 42
-```
-
----
-
-## 17. Testing Requirements
-
-### 17.1 Diff parser tests
-
-Test:
-
-- one file, one hunk;
-- multiple files;
-- multiple hunks;
-- added-only file;
-- deleted-only file;
-- blank changed lines;
-- no-newline marker;
-- malformed hunk;
-- binary file;
-- rename.
-
-### 17.2 Alignment tests
-
-Verify:
-
-- every covered non-special code token maps to a valid line;
-- subword tokens map to the same source line;
-- special and padding tokens are excluded;
-- repeated identical text on different lines maps correctly;
-- truncation produces uncovered lines rather than zero-scored lines;
-- multi-file diffs do not mix line IDs.
-
-### 17.3 JITFine tests
-
-Verify:
-
-- checkpoint loads without missing or unexpected trainable parameters;
-- normal prediction equals attention-enabled prediction within tolerance;
-- attention output shape is valid;
-- padding and special-token scores are excluded;
-- line-score sum matches mapped token-score sum;
-- deterministic inference in evaluation mode.
-
-### 17.4 Grad-CAM tests
-
-Verify:
-
-- activations and gradients are captured;
-- gradients are not `None`;
-- one CAM is produced per convolution branch;
-- each branch CAM is resized correctly;
-- merged CAM length equals input sequence length;
-- hooks are removed after inference;
-- repeated calls do not accumulate hooks;
-- prediction remains unchanged by hook registration;
-- target class selection works.
-
-### 17.5 SimCom tests
-
-Verify:
-
-- Sim, Com, and final scores are returned correctly;
-- final score matches the existing combination logic;
-- Grad-CAM is computed only from Com;
-- component dominance metadata is emitted;
-- checkpoint compatibility is preserved.
-
-### 17.6 Export tests
-
-Verify:
-
-- valid JSON;
-- deterministic ranking;
-- CSV escaping for commas, quotes, and newlines;
-- HTML generation for multi-file commits;
-- null scores for uncovered lines;
-- output directories are resume-safe.
-
----
-
-## 18. Logging and Error Handling
-
-Use structured logging where possible.
-
-Log at least:
-
-- model and checkpoint;
-- dataset and split;
-- commit ID;
-- number of parsed files and lines;
-- input length before and after truncation;
-- coverage ratio;
-- attribution runtime;
-- export paths;
-- skipped commits and reasons.
-
-Batch execution must write a summary file:
-
-```json
-{
-  "processed": 1000,
-  "succeeded": 973,
-  "skipped": 12,
-  "failed": 15,
-  "failures": [
-    {
-      "commit_id": "...",
-      "reason": "..."
-    }
-  ]
-}
-```
-
----
-
-## 19. Performance and Batch Processing
-
-### 19.1 Inference
-
-Use:
-
-```python
-model.eval()
-```
-
-For JITFine attention extraction, inference may use `torch.no_grad()`.
-
-For Grad-CAM, gradients are required. Do not wrap the relevant forward pass in `torch.no_grad()`.
-
-Before Grad-CAM backward:
-
-```python
-model.zero_grad(set_to_none=True)
-```
-
-### 19.2 Caching
-
-Cache reusable preprocessing outputs when practical:
-
-- parsed diff lines;
-- serialized model input;
-- token IDs;
-- attention masks;
-- alignment metadata.
-
-Do not cache computation graphs or gradients.
-
-### 19.3 Resume support
-
-If all required output files for a commit already exist and pass basic validation, skip it unless `--overwrite` is enabled.
-
-### 19.4 PBS compatibility
-
-Keep the CLI stateless enough to support dataset sharding:
-
-```bash
---shard-index 0
---num-shards 10
-```
-
-Sharding should be deterministic by ordered commit ID list or dataset index.
-
----
-
-## 20. Implementation Phases
-
-### Phase 1: Repository inspection
-
-Before coding:
-
-1. Locate model definitions for JITFine, DeepJIT, SimCom, and Com.
-2. Locate dataset and preprocessing code.
-3. Identify checkpoint loading logic.
-4. Document actual tensor shapes.
-5. Identify where truncation occurs.
-6. Identify how code changes are serialized.
-7. Confirm which JITFine input corresponds to code changes.
-8. Confirm the exact SimCom score-combination rule.
+1. Record actual JITFine input construction and tensor shapes.
+2. Add golden preprocessing fixtures.
+3. Implement inference-only checkpoint loading.
+4. Confirm prediction preservation on at least one real checkpoint and test split.
 
 Deliverable:
 
 ```text
-localization/IMPLEMENTATION_NOTES.md
+attribution/IMPLEMENTATION_NOTES.md
 ```
 
-This file must record actual class names, module paths, tensor shapes, and chosen hook layers.
+### Phase 1: Preprocessing metadata — COMPLETED
 
-### Phase 2: Diff parser and alignment
+Implement token-region and truncation metadata inside the existing preprocessing path without changing legacy behavior.
 
-Implement:
+Acceptance:
 
-- canonical diff parser;
-- line schemas;
-- model-input alignment;
-- truncation coverage tracking;
-- unit tests.
+- every observed sequence position has one region;
+- valid existing input produces identical tensors;
+- malformed markers yield structured skips.
 
-Acceptance criteria:
-
-- every covered model position can be traced to a diff line or explicitly marked non-code;
-- uncovered lines are identified correctly;
-- existing training and evaluation paths remain unchanged.
-
-### Phase 3: JITFine localizer
+### Phase 2: JITFine attention baseline — COMPLETED
 
 Implement:
 
-- optional attention output;
-- CLS-based token scoring;
-- token filtering;
-- line aggregation;
-- ranking and export;
-- checkpoint compatibility tests.
+- optional structured model output;
+- last-layer CLS attention averaged across heads;
+- code-token filtering;
+- deterministic token ranking;
+- prediction-preservation tests.
 
-Acceptance criteria:
-
-- existing checkpoint loads;
-- prediction is preserved;
-- one commit produces valid ranked-line output without retraining.
-
-### Phase 4: DeepJIT localizer
+### Phase 3: CLI and batch export — COMPLETED
 
 Implement:
 
-- reusable GradCAM1D;
-- hooks on code convolution branches;
-- multi-kernel CAM aggregation;
-- line aggregation and export;
-- hook lifecycle tests.
+- existing-CLI integration;
+- commit selection after full-test preprocessing;
+- JSONL and CSV export;
+- atomic writes, resume, and summary reporting.
 
-Acceptance criteria:
+### Phase 4: Attention variants — OPTIONAL
 
-- valid CAM is produced for each code branch;
-- prediction is preserved;
-- no hooks leak between samples.
+Add all-layer averaging and attention rollout only after the baseline is verified.
 
-### Phase 5: SimCom localizer
+### Phase 5: Source-line provenance — COMPLETED
 
-Implement:
+Implement URL/SHA-list ingestion from a local clone, canonical diff parsing,
+historical merge/patch serialization, provenance sidecars, exact alignment
+verification and coverage tracking.
 
-- component score exposure;
-- Com-only Grad-CAM;
-- dominance and reliability metadata;
-- output export.
+### Phase 6: Three-model line ranking — COMPLETED
 
-Acceptance criteria:
+Implement JITFine attention-to-line aggregation, DeepJIT token-stage Grad-CAM
+and Com row-to-line aggregation. Export deterministic ranked and uncovered
+lines for all three models.
 
-- final score remains identical to existing inference;
-- ranked lines come only from Com;
-- output clearly states that Sim is not explained at line level.
+### Phase 7: Chunked attribution for long commits — SIMCOM PILOT IMPLEMENTED
 
-### Phase 6: Batch CLI and visualization
+Split every SimCom patch into contiguous chunks of 10 historical patch rows.
+Repeat the unchanged commit message for every chunk, run prediction and
+hierarchical Grad-CAM independently, translate local tensor positions back to
+global patch rows and canonical line IDs, then retain the top-1 ranked source
+line from every chunk at commit level. Record every per-chunk score and use the
+maximum chunk probability only as the explicitly labelled commit-level
+prediction summary.
 
-Implement:
+After validating the SimCom pilot manually, extend the same contract to
+DeepJIT and JITFine using 512-token chunks while retaining the commit message.
 
-- dataset split iteration;
-- selection modes;
-- resume and overwrite;
-- JSON, CSV, HTML;
-- error summary;
-- optional sharding.
+### Phase 8: Line visualization and interventions — DEFERRED
 
-### Phase 7: Faithfulness utilities
-
-Implement:
-
-- prediction preservation;
-- comprehensiveness@k;
-- sufficiency@k;
-- random, first-line, and longest-line baselines;
-- summary CSV.
-
-This phase is secondary to producing correct rankings.
+Implement line heatmaps, comprehensiveness, sufficiency, and baselines after verified line ranking exists.
 
 ---
 
-## 21. Acceptance Criteria
+## 17. Acceptance Criteria
 
-The task is complete when all of the following hold:
+The current task is complete when:
 
-1. Existing checkpoints for JITFine, DeepJIT, and SimCom load successfully.
-2. No retraining is required.
-3. Normal model predictions are preserved when localization is enabled.
-4. Every ranked line corresponds to an actual added or deleted line in the original diff.
-5. Lines omitted by truncation are marked uncovered rather than assigned zero attribution.
-6. JITFine produces attention-based changed-line rankings from its code branch.
-7. DeepJIT produces Grad-CAM-based changed-line rankings from its code CNN.
-8. SimCom produces Grad-CAM-based changed-line rankings from Com only.
-9. SimCom output includes Sim, Com, and final scores.
-10. Each commit can be exported to JSON and CSV.
-11. HTML heatmaps clearly display files, hunks, scores, ranks, and uncovered lines.
-12. Batch execution can resume after interruption.
-13. Unit tests cover parser, alignment, attribution, checkpoint compatibility, and prediction preservation.
-14. Documentation explicitly states that the output is a model-derived ranking, not verified vulnerable-line ground truth.
-
----
-
-## 22. Important Constraints for the Coding Agent
-
-- Inspect the real repository before assuming class names or tensor shapes.
-- Reuse existing preprocessing rather than reimplementing it independently.
-- Keep all model changes backward-compatible with existing checkpoints.
-- Do not modify training behavior unless strictly necessary.
-- Do not retrain models as part of this task.
-- Do not silently assign zero attribution to truncated lines.
-- Do not describe attention or Grad-CAM scores as proof that a line is vulnerable.
-- Do not claim that JITFine or SimCom is fully explained when only one branch is localized.
-- Prefer small, testable changes over rewriting model code.
-- Add comments around tensor dimensions and hook locations.
-- Record any mismatch between the intended plan and the actual repository architecture in `IMPLEMENTATION_NOTES.md`.
+1. an existing JITFine checkpoint loads without retraining;
+2. attribution uses the exact current test preprocessing path;
+3. selecting one commit does not change full-test manual-feature scaling context;
+4. attention-enabled inference preserves the normal prediction within tolerance;
+5. only observed added/removed code tokens are ranked;
+6. message, markers, special tokens, and padding are excluded;
+7. every token result contains its exact model sequence position and token ID;
+8. truncation is measured and omitted tokens are not assigned zero attention;
+9. ranking is deterministic;
+10. results export successfully to JSONL and CSV;
+11. malformed commits are skipped with explicit reasons;
+12. output documentation states that attention is not class-specific and is not proof of vulnerability;
+13. no source-line, file, or hunk claims are made without verified provenance;
+14. HTML visualization and intervention sections remain explicitly deferred.
+15. a short GitHub URL or SHA resolves to one full commit in a local clone;
+16. every eligible line has stable file/hunk/old/new-line provenance;
+17. real Git change type is independent from the legacy model marker;
+18. reconstructed merge/patch serialization exactly matches the supplied model record;
+19. JITFine, DeepJIT and Com each produce deterministic changed-line rankings;
+20. DeepJIT line ranking uses token-stage attribution rather than treating its flattened merge row as one source line;
+21. uncovered or truncated lines have null scores and are excluded from ranking;
+22. existing checkpoint predictions are preserved within device tolerance.
+23. SimCom commits longer than 10 patch rows are processed without dropping trailing rows;
+24. every SimCom chunk repeats the same commit message and retains its global row range;
+25. the commit result exposes exactly one top-ranked source line per chunk that contains attributable source tokens with verified provenance.
 
 ---
 
-## 23. Expected Final Deliverables
+## 18. Expected Current Deliverables
 
-The coding agent should produce:
+1. Backward-compatible JITFine preprocessing metadata.
+2. Backward-compatible optional attention output.
+3. JITFine token-level code-change attention extractor.
+4. Deterministic token ranking.
+5. JSONL and CSV exporters.
+6. CLI integration for single-commit selection and batch attribution.
+7. Prediction-preservation and preprocessing tests.
+8. Inference-only checkpoint loader.
+9. `attribution/IMPLEMENTATION_NOTES.md` with actual tensor shapes and repository-specific decisions.
+10. README example command and interpretation limitations.
 
-1. Source code for the shared localization framework.
-2. JITFine attention localizer.
-3. DeepJIT Grad-CAM localizer.
-4. SimCom Com-component Grad-CAM localizer.
-5. Diff parser and model-position alignment.
-6. CLI for single-commit and batch localization.
-7. JSON and CSV exporters.
-8. HTML heatmap generator.
-9. Faithfulness utilities.
-10. Unit and integration tests.
-11. `IMPLEMENTATION_NOTES.md` describing repository-specific decisions.
-12. A concise README section with example commands.
+11. Git URL/SHA list preparation command and provenance sidecar.
+12. Exact historical merge/patch serializer with occurrence-level alignment.
+13. JITFine attention-based changed-line ranking.
+14. DeepJIT token-stage Grad-CAM changed-line ranking.
+15. Com hierarchical Grad-CAM changed-line ranking.
+16. Ranked/uncovered line JSONL and CSV exports plus coverage metadata.
+17. SimCom 10-row chunk attribution with per-chunk diagnostics and commit-level top-1 line candidates.
 
+HTML heatmaps and intervention-based faithfulness remain deferred.

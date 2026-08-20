@@ -69,6 +69,7 @@ def _metadata(args, feature_path, code_path):
         "commit_id": args.commit_id,
         "only_predicted_vulnerable": args.only_predicted_vulnerable,
         "line_aggregation": getattr(args, "line_aggregation", "sum"),
+        "simcom_chunk_size": getattr(args, "simcom_chunk_size", 10),
         "seed": args.seed,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -80,7 +81,7 @@ def _validate_resume(path, current):
     with open(path, "r", encoding="utf-8") as handle:
         previous = json.load(handle)
     keys = ("model", "fingerprints", "target_class", "threshold", "top_k", "commit_id",
-            "only_predicted_vulnerable", "line_aggregation")
+            "only_predicted_vulnerable", "line_aggregation", "simcom_chunk_size")
     if any(previous.get(key) != current.get(key) for key in keys):
         raise ValueError("resume_configuration_mismatch")
 
@@ -97,6 +98,192 @@ def _component_diagnostics(sim_score, com_score, threshold):
         "component_agreement": sim_class == com_class,
         "com_supports_final_class": com_class == final_class,
     }
+
+
+def split_simcom_row(row, chunk_size=10):
+    """Split one historical SimCom patch while preserving commit-level fields."""
+    if chunk_size < 1:
+        raise ValueError("simcom_chunk_size_must_be_positive")
+    patch_rows = str(row["code_change"]).split("\n")
+    chunks = []
+    for chunk_id, start in enumerate(range(0, len(patch_rows), chunk_size)):
+        end = min(start + chunk_size, len(patch_rows))
+        chunk_row = row.copy()
+        chunk_row["code_change"] = "\n".join(patch_rows[start:end])
+        chunks.append({
+            "chunk_id": chunk_id,
+            "row_start": start,
+            "row_end_exclusive": end,
+            "rows": patch_rows[start:end],
+            "data": chunk_row,
+        })
+    return chunks
+
+
+def _chunk_patch_position_scores(provenance, token_scores, row_start, row_end):
+    """Map local chunk tensor positions back to canonical changed-line IDs."""
+    position_scores = []
+    for (global_row, token_position), line_id in patch_token_line_ids(provenance).items():
+        if row_start <= global_row < row_end:
+            local_row = global_row - row_start
+            if local_row < token_scores.shape[0] and token_position < token_scores.shape[1]:
+                position_scores.append((line_id, token_scores[local_row, token_position].item()))
+    return position_scores
+
+
+def _with_chunk_fields(items, chunk):
+    return [dict(item, chunk_id=chunk["chunk_id"],
+                 chunk_row_start=chunk["row_start"],
+                 chunk_row_end_exclusive=chunk["row_end_exclusive"])
+            for item in items]
+
+
+def _attribute_simcom_commit(args, row, commit_id, cnn_model, com_wrapper,
+                             sim_scores, provenance_index, scope, component):
+    chunk_size = getattr(args, "simcom_chunk_size", 10)
+    model_rows = int(com_wrapper.hyperparameters["code_line"])
+    if chunk_size > model_rows:
+        raise ValueError(
+            f"simcom_chunk_size_exceeds_model_code_line:{chunk_size}>{model_rows}"
+        )
+    provenance = None
+    if provenance_index is not None:
+        if commit_id not in provenance_index:
+            raise ValueError("missing_line_provenance")
+        provenance = provenance_index[commit_id]
+        verify_serialization(provenance, str(row["code_change"]), "patch")
+
+    chunks, flat_rows, chunk_top_lines, all_position_scores = [], [], [], []
+    prediction_scores = []
+    for chunk in split_simcom_row(row, chunk_size):
+        chunk_frame = pd.DataFrame([chunk["data"]])
+        chunk_dataset = ComDataset(
+            chunk_frame, com_wrapper.hyperparameters,
+            com_wrapper.code_dictionary, com_wrapper.message_dictionary,
+        )
+        sample = chunk_dataset[0]
+        code = sample["code"].unsqueeze(0).to(args.device)
+        message = sample["message"].unsqueeze(0).to(args.device)
+        with torch.no_grad():
+            normal_score = float(cnn_model(message, code)[0].item())
+        gradcam = hierarchical_row_gradcam(cnn_model, message, code, args.target_class)
+        com_score = float(gradcam["probability"][0].item())
+        tolerance = 1e-5 if str(args.device).startswith("cuda") else 1e-6
+        if abs(normal_score - com_score) >= tolerance:
+            raise ValueError(f"prediction_preservation_failed:chunk_{chunk['chunk_id']}")
+
+        diagnostics = None
+        chunk_prediction = com_score
+        if sim_scores is not None:
+            if commit_id not in sim_scores:
+                raise ValueError("missing_sim_score")
+            diagnostics = _component_diagnostics(
+                float(sim_scores[commit_id]), com_score, args.threshold,
+            )
+            chunk_prediction = diagnostics["final_score"]
+        prediction_scores.append(chunk_prediction)
+
+        ranked_rows = rank_observed_rows(
+            chunk["rows"], gradcam["row_scores"][0].cpu().tolist(),
+            "mean_cam_over_exact_kernel_receptive_fields", args.top_k,
+        )
+        row_dicts = _with_chunk_fields([item.to_dict() for item in ranked_rows], chunk)
+        for item in row_dicts:
+            item["row_position"] += chunk["row_start"]
+        flat_rows.extend(row_dicts)
+
+        chunk_record = {
+            "chunk_id": chunk["chunk_id"],
+            "row_start": chunk["row_start"],
+            "row_end_exclusive": chunk["row_end_exclusive"],
+            "row_count": len(chunk["rows"]),
+            "commit_message_repeated": True,
+            "com_score": com_score,
+            "prediction_score": chunk_prediction,
+            "predicted_label": int(chunk_prediction > args.threshold),
+            "ranked_rows": row_dicts,
+            "top_line": None,
+            "metadata": {
+                "component_scores": diagnostics,
+                "prediction_preservation_delta": abs(normal_score - com_score),
+                "branch_activation_shapes": gradcam["branch_activation_shapes"],
+                "token_branch_activation_shapes": gradcam["token_branch_activation_shapes"],
+            },
+        }
+        if provenance is not None:
+            position_scores = _chunk_patch_position_scores(
+                provenance, gradcam["token_scores"][0],
+                chunk["row_start"], chunk["row_end_exclusive"],
+            )
+            all_position_scores.extend(position_scores)
+            line_result = aggregate_line_scores(
+                provenance, position_scores,
+                getattr(args, "line_aggregation", "sum"), args.top_k,
+                model_input_kind="patch",
+            )
+            ranked_lines = _with_chunk_fields(line_result["ranked_lines"], chunk)
+            chunk_record["ranked_lines"] = ranked_lines
+            if ranked_lines:
+                chunk_record["top_line"] = ranked_lines[0]
+                chunk_top_lines.append(ranked_lines[0])
+        chunks.append(chunk_record)
+
+    prediction_score = max(prediction_scores)
+    if args.only_predicted_vulnerable and prediction_score <= args.threshold:
+        return {"commit_id": commit_id, "status": "skipped",
+                "reason": "filtered_not_predicted_vulnerable"}
+
+    all_rows = str(row["code_change"]).split("\n")
+    record = {
+        "commit_id": commit_id,
+        "status": "succeeded",
+        "model_name": "simcom",
+        "prediction_score": prediction_score,
+        "predicted_label": int(prediction_score > args.threshold),
+        "threshold": args.threshold,
+        "attribution_method": "hierarchical_gradcam",
+        "target_class": args.target_class,
+        "attribution_is_class_specific": True,
+        "explanation_scope": scope,
+        "localization_component": component,
+        "full_model_explanation": False,
+        "ranked_rows": flat_rows,
+        "ranked_lines": chunk_top_lines,
+        "chunk_top_lines": chunk_top_lines,
+        "chunks": chunks,
+        "input_rows": len(all_rows),
+        "observed_rows": len(all_rows),
+        "truncated_rows": 0,
+        "truncated": False,
+        "metadata": {
+            "row_semantics": "serialized_code_change_rows",
+            "source_line_provenance_verified": provenance is not None,
+            "chunking": {
+                "strategy": "contiguous_patch_rows",
+                "chunk_size": chunk_size,
+                "chunk_count": len(chunks),
+                "commit_message_repeated_per_chunk": True,
+                "prediction_aggregation": "max_chunk_probability",
+                "line_selection": "top_1_per_chunk",
+            },
+            "prediction_scope": (
+                "max_chunk_full_simcom_mean" if sim_scores is not None
+                else "max_chunk_com_component_only"
+            ),
+            "unexplained_components": ["Sim"],
+        },
+    }
+    if provenance is not None:
+        coverage = aggregate_line_scores(
+            provenance, all_position_scores,
+            getattr(args, "line_aggregation", "sum"), None,
+            model_input_kind="patch",
+        )
+        for key in ("uncovered_lines", "total_changed_lines", "covered_changed_lines",
+                    "coverage_ratio", "line_aggregation"):
+            record[key] = coverage[key]
+        record["metadata"]["serialization_alignment_status"] = "exact"
+    return record
 
 
 def attribute_cnn(args):
@@ -145,8 +332,7 @@ def attribute_cnn(args):
             com_wrapper = Com(args.repo_language, args.device)
             com_wrapper.initialize(args.dictionary, args.hyperparameters, args.model_path, inference_only=True)
             wrapper = None
-        dataset = ComDataset(frame, com_wrapper.hyperparameters, com_wrapper.code_dictionary,
-                             com_wrapper.message_dictionary)
+        dataset = None  # SimCom samples are built per chunk below.
         cnn_model = com_wrapper.model
         if has_full_simcom:
             sim_predictions = wrapper.sim.inference(feature_path, args.threshold)
@@ -157,12 +343,21 @@ def attribute_cnn(args):
         component = "Com"
 
     cnn_model.eval()
-    for index in range(len(dataset)):
+    for index in range(len(frame)):
         row = frame.iloc[index]
         commit_id = str(row["commit_id"])
         if commit_id in completed or (args.commit_id and commit_id != str(args.commit_id)):
             continue
         try:
+            if args.model == "simcom":
+                record = _attribute_simcom_commit(
+                    args, row, commit_id, cnn_model, com_wrapper,
+                    sim_scores, provenance_index, scope, component,
+                )
+                records.append(record)
+                completed.add(commit_id)
+                write_jsonl(jsonl_path, records)
+                continue
             sample = dataset[index]
             code = sample["code"].unsqueeze(0).to(args.device)
             message = sample["message"].unsqueeze(0).to(args.device)

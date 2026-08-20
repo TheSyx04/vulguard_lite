@@ -135,6 +135,10 @@ def main(args=None):
     attribution_parser.add_argument(
         "-line_aggregation", choices=["sum", "mean", "max"], default="sum",
     )
+    attribution_parser.add_argument(
+        "-simcom_chunk_size", type=int_gte_1, default=10,
+        help="Patch rows per SimCom attribution chunk (must not exceed model code_line)",
+    )
     attribution_parser.add_argument("-output_dir", required=True)
     attribution_parser.add_argument(
         "-attention_strategy",

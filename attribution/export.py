@@ -88,7 +88,8 @@ def write_token_csv(path: str, records: Iterable[Dict[str, Any]]) -> None:
 
 ROW_CSV_COLUMNS = [
     "commit_id", "model", "prediction_score", "predicted_label", "target_class",
-    "rank", "row_position", "text", "raw_score", "normalized_score", "truncated",
+    "chunk_id", "chunk_row_start", "chunk_row_end_exclusive", "rank",
+    "row_position", "text", "raw_score", "normalized_score", "truncated",
 ]
 
 
@@ -104,7 +105,11 @@ def write_row_csv(path: str, records: Iterable[Dict[str, Any]]) -> None:
                 "commit_id": record["commit_id"], "model": record["model_name"],
                 "prediction_score": record["prediction_score"],
                 "predicted_label": record["predicted_label"],
-                "target_class": record["target_class"], "rank": row["rank"],
+                "target_class": record["target_class"],
+                "chunk_id": row.get("chunk_id"),
+                "chunk_row_start": row.get("chunk_row_start"),
+                "chunk_row_end_exclusive": row.get("chunk_row_end_exclusive"),
+                "rank": row["rank"],
                 "row_position": row["row_position"], "text": row["text"],
                 "raw_score": row["raw_score"], "normalized_score": row["normalized_score"],
                 "truncated": record["truncated"],
@@ -114,6 +119,7 @@ def write_row_csv(path: str, records: Iterable[Dict[str, Any]]) -> None:
 
 LINE_CSV_COLUMNS = [
     "commit_id", "model", "prediction_score", "predicted_label", "rank",
+    "chunk_id", "chunk_row_start", "chunk_row_end_exclusive",
     "line_id", "file_path", "hunk_id", "diff_position", "old_line_no",
     "new_line_no", "change_type", "model_marker", "text", "raw_score",
     "normalized_score", "attributed_position_count", "coverage_ratio",
@@ -132,6 +138,9 @@ def write_line_csv(path: str, records: Iterable[Dict[str, Any]]) -> None:
                 "commit_id": record["commit_id"], "model": record["model_name"],
                 "prediction_score": record["prediction_score"],
                 "predicted_label": record["predicted_label"], "rank": line["rank"],
+                "chunk_id": line.get("chunk_id"),
+                "chunk_row_start": line.get("chunk_row_start"),
+                "chunk_row_end_exclusive": line.get("chunk_row_end_exclusive"),
                 "line_id": line["line_id"], "file_path": line["file_path"],
                 "hunk_id": line["hunk_id"], "diff_position": line["diff_position"],
                 "old_line_no": line["old_line_no"], "new_line_no": line["new_line_no"],
