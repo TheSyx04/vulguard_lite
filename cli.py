@@ -78,6 +78,18 @@ def main(args=None):
     common_parser.add_argument("-hf_split_path", type=str, default=None, help="Optional subdirectory in the HF dataset repo to pin a specific split/fold")
     common_parser.add_argument("-hf_output_repo_id", type=str, default=None, help="Hugging Face dataset repo id used to upload experiment outputs")
     common_parser.add_argument("-hf_upload_result", type=str2bool, default=False, help="Upload final experiment outputs to Hugging Face dataset repo (True/False)")
+    common_parser.add_argument(
+        "-hf_upload_checkpoint_only",
+        "-hf_upload_model_config_only",
+        dest="hf_upload_checkpoint_only",
+        type=str2bool,
+        default=False,
+        help=(
+            "Upload only one inference-ready checkpoint per sampling seed (from run 1); "
+            "do not upload experiment result files. The old "
+            "-hf_upload_model_config_only name is retained as an alias."
+        ),
+    )
     
     training_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     training_parser.set_defaults(func=training)
@@ -136,8 +148,10 @@ def main(args=None):
         "-line_aggregation", choices=["sum", "mean", "max"], default="sum",
     )
     attribution_parser.add_argument(
-        "-simcom_chunk_size", type=int_gte_1, default=10,
-        help="Patch rows per SimCom attribution chunk (must not exceed model code_line)",
+        "-hunk_chunk_size", "-simcom_chunk_size", dest="hunk_chunk_size",
+        type=int_gte_1, default=10,
+        help=("Maximum changed source lines per Git-hunk chunk for DeepJIT/SimCom; "
+              "-simcom_chunk_size is retained as a deprecated alias"),
     )
     attribution_parser.add_argument("-output_dir", required=True)
     attribution_parser.add_argument(

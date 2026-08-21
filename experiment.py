@@ -36,7 +36,8 @@ Timing log
     * Total time for that run (seconds)
 
     The log is also pushed to Hugging Face together with the CSV results when
-    ``-hf_upload_result True`` is set.
+    ``-hf_upload_result True`` is set, unless checkpoint-only mode suppresses
+    the experiment-directory upload.
 
 Directory layout produced
 -------------------------
@@ -67,7 +68,7 @@ from argparse import Namespace
 import pandas as pd
 
 from .evaluating import evaluating
-from .training import training
+from .training import model_seed_name, training
 from .utils.metrics import get_metrics
 from .utils.hf_upload import upload_folder_to_hf_dataset
 from .utils.utils import create_dg_cache
@@ -187,6 +188,59 @@ def _hf_output_path(params):
     if custom:
         return custom.strip("/")
     return f"output/{params.repo_name}/{params.model}/{_sampling_tag(params)}/{_experiment_slug(params)}"
+
+
+def _hf_checkpoint_path(params, seed):
+    """Return the remote directory for one seed's inference-ready checkpoint."""
+    seed_label = "default" if seed is None else str(seed)
+    return f"model_config/{params.repo_name}/{params.model}/{_split_tag(params)}/seed_{seed_label}"
+
+
+def _should_upload_checkpoints(params):
+    """Whether one inference-ready checkpoint should be uploaded per seed."""
+    return bool(
+        getattr(params, "hf_upload_result", False)
+        or getattr(params, "hf_upload_checkpoint_only", False)
+    )
+
+
+def _should_upload_results(params):
+    """Checkpoint-only mode suppresses the full experiment-folder upload."""
+    return bool(
+        getattr(params, "hf_upload_result", False)
+        and not getattr(params, "hf_upload_checkpoint_only", False)
+    )
+
+
+def _should_upload_seed_checkpoint(params, run_idx):
+    """Select exactly run 1 as the uploaded representative for each seed."""
+    return run_idx == 1 and _should_upload_checkpoints(params)
+
+
+def _upload_seed_checkpoint(params, local_folder, seed):
+    """Upload the representative run-1 model artifact for one sampling seed."""
+    if not _should_upload_checkpoints(params):
+        return
+    if not os.path.isdir(local_folder):
+        raise FileNotFoundError(f"Checkpoint folder not found: {local_folder}")
+
+    repo_id = getattr(params, "hf_output_repo_id", None) or getattr(params, "hf_repo_id", None)
+    if not repo_id:
+        raise ValueError(
+            "-hf_output_repo_id or -hf_repo_id is required to upload checkpoints."
+        )
+
+    remote_path = _hf_checkpoint_path(params, seed)
+    print(f"Uploading seed checkpoint to Hugging Face: {repo_id}/{remote_path}")
+    upload_folder_to_hf_dataset(
+        local_folder=local_folder,
+        repo_id=repo_id,
+        path_in_repo=remote_path,
+        commit_message=(
+            f"Upload {params.model} checkpoint for "
+            f"{params.repo_name}/{_split_tag(params)}/seed {seed}"
+        ),
+    )
 
 
 def _collect_metric_row(metrics_file, model_name, run_idx, budget, threshold, threshold_payload, seed=None):
@@ -370,8 +424,8 @@ def run_experiment(params):
     Pipeline overview (per run)
     ---------------------------
     1. **Training** — calls :func:`training` with the (optionally undersampled)
-       training dataset.  The best model checkpoint is saved to
-       ``<experiment_root>/run_<N>/checkpoints/``.
+       training dataset. Model artifacts are isolated by sampling seed under
+       ``<save_root>/models/<model>_seed_<seed>/``.
     2. **Calibration** (when ``-calibrated True``) — calls :func:`evaluating`
        on the validation set, searches for the optimal decision threshold over
        ``-calibration_range`` at the given ``-budget``, and writes the selected
@@ -387,9 +441,9 @@ def run_experiment(params):
     Timing information (training time, calibration time, total time per run) is
     written to ``<experiment_root>/<slug>_timing.log``.
 
-    If ``-hf_upload_result True`` is set, the entire experiment directory
-    (including the timing log) is pushed to the specified Hugging Face dataset
-    repository.
+    If ``-hf_upload_result True`` is set, the entire experiment directory and
+    one run-1 checkpoint per seed are uploaded. Setting
+    ``-hf_upload_checkpoint_only True`` uploads only those seed checkpoints.
 
     Parameters
     ----------
@@ -492,11 +546,14 @@ def run_experiment(params):
 
             model_name = params.model
             # Sklearn models (lapredict, lr) save via pickle and have no checkpoint concept.
+            seed_model_dir = os.path.join(
+                base_checkpoint_dir or f"{base_save_path}/models",
+                model_seed_name(model_name, seed_label),
+            )
             if model_name not in _SKLEARN_MODELS:
-                run_checkpoint_dir = (
-                    f"{base_checkpoint_dir}/run_{global_run_idx}"
-                    if base_checkpoint_dir
-                    else f"{run_dir}/checkpoints"
+                run_checkpoint_dir = os.path.join(
+                    seed_model_dir,
+                    "checkpoints",
                 )
                 os.makedirs(run_checkpoint_dir, exist_ok=True)
             else:
@@ -505,6 +562,12 @@ def run_experiment(params):
             run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"
             if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
                 print(f"Run {global_run_idx} already completed. Skip this run: {run_test_metric_file}")
+                if _should_upload_seed_checkpoint(params, run_idx):
+                    _upload_seed_checkpoint(
+                        params,
+                        os.path.join(seed_model_dir, "last_epoch"),
+                        current_sampling_seed if current_sampling_seed is not None else base_seed,
+                    )
                 test_metrics_df = pd.read_csv(run_test_metric_file)
                 all_test_metrics.append(test_metrics_df)
                 timing_logger.info(f"  -> Skipped (already completed): {run_test_metric_file}")
@@ -520,17 +583,25 @@ def run_experiment(params):
                     "sampling_run_id": run_idx,
                     "sampling_seed": current_sampling_seed if current_sampling_seed is not None else base_seed,
                     "checkpoint_dir": run_checkpoint_dir,
+                    "model_output_dir": seed_model_dir,
                     # Propagate the pre-resolved hyperparameters path.
                     "hyperparameters": params.hyperparameters,
                 },
             )
             print("[1/3] Training...")
             train_start = time.perf_counter()
-            training(train_params)
+            training_result = training(train_params)
             train_elapsed = time.perf_counter() - train_start
             timing_logger.info(
                 f"  [1/3] Training time      : {_fmt_duration(train_elapsed)} ({train_elapsed:.2f}s)"
             )
+            last_model_dir = training_result["last_model_dir"]
+            if _should_upload_seed_checkpoint(params, run_idx):
+                _upload_seed_checkpoint(
+                    params,
+                    last_model_dir,
+                    current_sampling_seed if current_sampling_seed is not None else base_seed,
+                )
 
             # ------------------------------------------------------------------
             # Phase 2 & 3: Calibration + Test (per budget)
@@ -555,6 +626,7 @@ def run_experiment(params):
                         # Per-budget thresholds are selected from the same table below.
                         "budget": float(budgets[0]),
                         "runs": 1,
+                        "model_path": last_model_dir,
                     },
                 )
                 evaluating(val_eval_params)
@@ -660,6 +732,7 @@ def run_experiment(params):
                         "budget": float(budget),
                         "threshold": selected_threshold,
                         "runs": 1,
+                        "model_path": last_model_dir,
                     },
                 )
                 evaluating(test_eval_params)
@@ -767,7 +840,7 @@ def run_experiment(params):
         timing_logger.info(f"Total runs completed  : {global_run_idx}")
         timing_logger.info("=" * 70)
 
-        if getattr(params, "hf_upload_result", False):
+        if _should_upload_results(params):
             output_repo_id = getattr(params, "hf_output_repo_id", None) or hf_repo_id
             if not output_repo_id:
                 raise ValueError("-hf_output_repo_id or -hf_repo_id is required when -hf_upload_result is True.")
