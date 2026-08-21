@@ -40,3 +40,6 @@ datasets/
 
 # Local helper scripts are not part of the maintained package
 scripts/
+!scripts/
+scripts/*
+!scripts/run_experiments_single_gpu.sh
