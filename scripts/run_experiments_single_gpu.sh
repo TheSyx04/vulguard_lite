@@ -23,6 +23,7 @@ HF_REPO_ID="TheSyx/vulguard_lite"
 HF_REVISION="main"
 HF_SPLIT_PREFIX="dataset"
 HF_UPLOAD_RESULT="False"
+HF_UPLOAD_CHECKPOINT_ONLY="False"
 HF_OUTPUT_REPO_ID=""
 
 RUNS="3"
@@ -67,6 +68,8 @@ Paths and Hugging Face:
   --hf-revision REV            Input dataset revision (default: main)
   --hf-split-prefix PATH       Prefix before dataset/split (default: dataset)
   --upload-results BOOL        Upload completed experiment folders (default: False)
+  --upload-checkpoints-only BOOL
+                               Upload one run-1 checkpoint per seed and no results
   --hf-output-repo-id ID       Optional separate output dataset repository
 
 Other:
@@ -118,6 +121,7 @@ while [[ $# -gt 0 ]]; do
         --hf-revision) require_value "$@"; HF_REVISION="$2"; shift 2 ;;
         --hf-split-prefix) require_value "$@"; HF_SPLIT_PREFIX="$2"; shift 2 ;;
         --upload-results) require_value "$@"; HF_UPLOAD_RESULT="$2"; shift 2 ;;
+        --upload-checkpoints-only) require_value "$@"; HF_UPLOAD_CHECKPOINT_ONLY="$2"; shift 2 ;;
         --hf-output-repo-id) require_value "$@"; HF_OUTPUT_REPO_ID="$2"; shift 2 ;;
         --dry-run) DRY_RUN="True"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -194,6 +198,7 @@ for split in "${SPLIT_ARRAY[@]}"; do
         -calibration_range "${CALIBRATION_ARRAY[@]}"
         -resume_from_checkpoint "$RESUME"
         -hf_upload_result "$HF_UPLOAD_RESULT"
+        -hf_upload_checkpoint_only "$HF_UPLOAD_CHECKPOINT_ONLY"
     )
 
     if [[ -n "$HF_OUTPUT_REPO_ID" ]]; then

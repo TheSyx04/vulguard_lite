@@ -109,7 +109,16 @@ class JITFine(BaseWraper):
                 model_path if os.path.isfile(model_path)
                 else os.path.join(model_path, "jitfine.pth")
             )
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            # JITFine checkpoints contain optimizer and scheduler state in
+            # addition to tensor weights.  PyTorch 2.6 changed torch.load's
+            # default to weights_only=True, which rejects metadata (including
+            # NumPy scalars) found in checkpoints created by older runs.
+            # Checkpoints used here must therefore come from a trusted source.
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=self.device,
+                weights_only=False,
+            )
             model_state = checkpoint.get('model_state_dict', checkpoint)
             self.model.load_state_dict(model_state)
             if not inference_only:

@@ -6,6 +6,33 @@ import os
 import random
 
 
+def model_seed_name(model_name, sampling_seed):
+    """Return the directory name used to isolate a model for one data seed."""
+    seed_label = "default" if sampling_seed is None else str(sampling_seed)
+    return f"{model_name}_seed_{seed_label}"
+
+
+def resolve_model_output_dir(params, dg_cache_path=None):
+    """Resolve the seed-scoped directory containing final weights/checkpoints."""
+    explicit_dir = getattr(params, "model_output_dir", None)
+    if explicit_dir:
+        return explicit_dir
+
+    if dg_cache_path is None:
+        dg_cache_path = create_dg_cache(params.dg_save_folder)
+
+    sampling_seed = getattr(params, "sampling_seed", None)
+    if sampling_seed is None:
+        sampling_seed = getattr(params, "seed", None)
+    return os.path.join(
+        dg_cache_path,
+        "save",
+        params.repo_name,
+        "models",
+        model_seed_name(params.model, sampling_seed),
+    )
+
+
 def _undersample_jsonl(input_path, output_path, seed=None):
     if seed is not None:
         random.seed(seed)
@@ -122,12 +149,16 @@ def _apply_undersampling_if_needed(train_df_path, params, dg_cache_path):
     ]
     return ",".join(sampled_paths)
 
-    
+
 def training(params):
     # create save folders
     dg_cache_path = create_dg_cache(params.dg_save_folder)
-    save_path = f'{dg_cache_path}/save/{params.repo_name}'
-    checkpoint_dir = params.checkpoint_dir if getattr(params, "checkpoint_dir", None) else f"{save_path}/models/checkpoints"
+    model_output_dir = resolve_model_output_dir(params, dg_cache_path)
+    checkpoint_dir = (
+        params.checkpoint_dir
+        if getattr(params, "checkpoint_dir", None)
+        else os.path.join(model_output_dir, "checkpoints")
+    )
     os.makedirs(checkpoint_dir, exist_ok=True)
     model = init_model(params.model, params.repo_language, params.device)
 
@@ -143,7 +174,7 @@ def training(params):
     NO_DICT_MODELS = {"tlel", "lapredict", "lr", "jitfine"}
     if model.model_name in NO_DICT_MODELS:
         hf_paths["dictionary"] = None
-    
+
     default_inputs = model.default_input.split(",")
     if params.train_set:
         train_df_path = params.train_set
@@ -153,14 +184,14 @@ def training(params):
         train_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/train_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
 
     train_df_path = _apply_undersampling_if_needed(train_df_path, params, dg_cache_path)
-    
+
     if params.val_set:
         val_df_path = params.val_set
     elif hf_paths.get("val_set"):
         val_df_path = hf_paths["val_set"]
     else:
         val_df_path = ','.join([f'{dg_cache_path}/dataset/{params.repo_name}/data/val_{default_input}_{params.repo_name}.jsonl' for default_input in default_inputs])
-        
+
     model_path = params.model_path
     if getattr(params, "resume_from_checkpoint", False):
         checkpoint_model_path = checkpoint_dir
@@ -178,12 +209,12 @@ def training(params):
     if dictionary is None and model.model_name not in NO_DICT_MODELS:
         dictionary = f'{dg_cache_path}/dataset/{params.repo_name}/dict_{params.repo_name}.jsonl'
     hyperparameters = params.hyperparameters
-    
+
     print(f"Init model: {model.model_name}")
     model.initialize(model_path=model_path, dictionary=dictionary, hyperparameters=hyperparameters)
-    
+
     print(f"Train {model.model_name}")
-    save_best_path = f"{save_path}/models/best_epoch"
+    save_best_path = os.path.join(model_output_dir, "best_epoch")
     model.train(
         train_df=train_df_path,
         val_df=val_df_path,
@@ -191,8 +222,14 @@ def training(params):
         save_path=save_best_path,
         checkpoint_path=checkpoint_dir,
     )
-    
+
     print(f"Save {model.model_name}")
-    save_last_path = f"{save_path}/models/last_epoch"
+    save_last_path = os.path.join(model_output_dir, "last_epoch")
     model.save(save_path=save_last_path)
-    print(f"Model saved to: {save_path}")
+    print(f"Model saved to: {model_output_dir}")
+    return {
+        "model_output_dir": model_output_dir,
+        "checkpoint_dir": checkpoint_dir,
+        "best_model_dir": save_best_path,
+        "last_model_dir": save_last_path,
+    }
