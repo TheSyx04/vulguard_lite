@@ -8,6 +8,7 @@ from .evaluating import evaluating
 from .experiment import run_experiment
 from .attribution.runner import attribute
 from .attribution.source_provenance import prepare_lines
+from .ground_truth_pipeline import prepare_ground_truth_hunks, rank_ground_truth
 from .models.init_model import models
 
 __version__ = "0.2.01"
@@ -32,6 +33,13 @@ def float_0_1(value):
 
     if parsed < 0.0 or parsed > 1.0:
         raise argparse.ArgumentTypeError("Expected a float in range [0, 1]")
+    return parsed
+
+
+def float_gt_0_1(value):
+    parsed = float_0_1(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("Expected a float in range (0, 1]")
     return parsed
 
 
@@ -182,6 +190,57 @@ def main(args=None):
     )
     prepare_lines_parser.add_argument("-output_dir", required=True)
 
+    prepare_ground_truth_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    prepare_ground_truth_parser.set_defaults(func=prepare_ground_truth_hunks)
+    prepare_ground_truth_parser.add_argument(
+        "-ground_truth", required=True, help="XLSX ground-truth workbook",
+    )
+    prepare_ground_truth_parser.add_argument("-sheet", default="Linux", help="Workbook sheet name")
+    prepare_ground_truth_parser.add_argument("-output_dir", required=True)
+
+    rank_ground_truth_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    rank_ground_truth_parser.set_defaults(func=rank_ground_truth)
+    rank_ground_truth_parser.add_argument("-prepared_dir", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-model", choices=["jitfine", "deepjit", "simcom"], required=True,
+    )
+    rank_ground_truth_parser.add_argument("-device", default="cpu", help="Eg: cpu, cuda, cuda:1")
+    rank_ground_truth_parser.add_argument("-model_path", required=True)
+    rank_ground_truth_parser.add_argument("-hyperparameters", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-dictionary", default=None, help="Required for DeepJIT and SimCom",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-features", default=None, help="Manual feature JSONL required for JITFine",
+    )
+    rank_ground_truth_parser.add_argument("-output_dir", required=True)
+    rank_ground_truth_parser.add_argument("-threshold", type=float_0_1, default=0.5)
+    rank_ground_truth_parser.add_argument("-target_class", type=int, choices=[0, 1], default=1)
+    rank_ground_truth_parser.add_argument(
+        "-line_aggregation", choices=["sum", "mean", "max"], default="sum",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hunk_chunk_size", type=int_gte_1, default=10,
+        help="Maximum changed source lines per attribution chunk",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-attention_strategy",
+        choices=["last_layer_cls_mean", "all_layers_cls_mean", "attention_rollout"],
+        default="last_layer_cls_mean",
+        help="JITFine attention strategy; ignored by CNN models",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-metric_top_k", nargs="+", type=int_gte_1, default=[1, 3, 5, 10],
+        help="K values for absolute hit rate, Recall@K, and NDCG@K",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-effort_fraction", type=float_gt_0_1, default=0.2,
+        help="LOC/recall fraction for effort-aware metrics (default: 0.2)",
+    )
+    rank_ground_truth_output = rank_ground_truth_parser.add_mutually_exclusive_group()
+    rank_ground_truth_output.add_argument("-overwrite", action="store_true")
+    rank_ground_truth_output.add_argument("-resume", action="store_true")
+
     experiment_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     experiment_parser.set_defaults(func=run_experiment)
     experiment_parser.add_argument("-model", type=str, default=None, choices=models, help="List of models")
@@ -252,6 +311,14 @@ def main(args=None):
         'prepare-lines', parents=[prepare_lines_parser],
         help='Prepare provenance-rich merge/patch inputs from Git commits',
     )
+    subparsers.add_parser(
+        'prepare-ground-truth-hunks', parents=[prepare_ground_truth_parser],
+        help='Create reusable ground-truth hunks from an XLSX sheet and local Git clone',
+    )
+    subparsers.add_parser(
+        'rank-ground-truth', parents=[rank_ground_truth_parser],
+        help='Rank prepared ground-truth hunks with JITFine, DeepJIT, or SimCom',
+    )
 
     options = parser.parse_args(args)
 
@@ -276,7 +343,10 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment', 'attribute', 'prepare-lines']:
+    if options.__dict__.get('command') in [
+        'training', 'evaluating', 'experiment', 'attribute', 'prepare-lines',
+        'prepare-ground-truth-hunks', 'rank-ground-truth',
+    ]:
         print(f"Set seed: {options.seed}")
         seed_everything(options.seed)
         
