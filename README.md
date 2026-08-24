@@ -59,6 +59,10 @@ python -m vulguard_lite --help
 
 ## How to Run
 
+For the two-stage workflow that first creates reusable ground-truth hunks from
+Excel/Git and then optionally ranks them with JITFine, DeepJIT, or SimCom, see
+[GROUND_TRUTH_HUNK_PIPELINE.md](GROUND_TRUTH_HUNK_PIPELINE.md).
+
 All commands follow this pattern:
 
 ```
@@ -172,35 +176,17 @@ python -m vulguard_lite evaluating \
 **With threshold calibration:**
 
 ```bash
-python -m vulguard_lite evaluating \
-  -repo_name   linux \
-  -repo_language C \
-  -model       tlel \
-  -test_set    /data/val_Kamei_features_linux.jsonl \
-  -calibrated  True \
-  -budget      0.2 \
+python -m vulguard_lite evaluating \ `
+  -repo_name   linux \ `
+  -repo_language C \ `
+  -model       tlel \ `
+  -test_set    /data/val_Kamei_features_linux.jsonl \ `
+  -calibrated  True \ `
+  -budget      0.2 \ `
   -calibration_range 0 1 10001
 ```
 
 ### 4. Model Attribution
-
-Prepare verified line provenance from a local Git clone before requesting
-changed-line ranking. The input can be a SHA, a GitHub commit URL, or a
-text/JSONL list passed with `-commit_urls`:
-
-```powershell
-python -m vulguard_lite prepare-lines `
-  -repo_language C `
-  -repo_path C:\repos\openssl `
-  -commit_id https://github.com/openssl/openssl/commit/32ab57cb `
-  -output_dir .\results\openssl_line_inputs
-```
-
-This writes `line_provenance.jsonl`, `merge.jsonl`, and `patch.jsonl`. Git
-change type and old/new line numbers are kept separately from the model-specific
-legacy markers required by existing checkpoints. Historical SimCom patch rows
-use the opposite marker direction from DeepJIT/JITFine merge inputs; the
-sidecar records both without changing Git semantics.
 
 The `attribute` sub-command ranks JITFine token occurrences from the added and
 removed regions of the existing test input using CLS attention. It preprocesses
@@ -225,57 +211,46 @@ Use `-commit_id <id>` to export one commit or
 results require either `-resume` or `-overwrite`.
 
 The output is an attention diagnostic, not a class-specific explanation or a
-claim that a token or source line is vulnerable. Supplying
-`-line_provenance` enables verified source-line aggregation.
+claim that a token or source line is vulnerable. Source-line aggregation is
+deferred until provenance-rich diff data is available.
 
 DeepJIT and the Com component of SimCom also support hierarchical Grad-CAM over
 the newline-separated code-change rows consumed by their existing CNN input:
 
 ```bash
-python -m vulguard_lite attribute \
-  -repo_language C \
-  -model deepjit \
-  -device cuda \
-  -model_path ./models/best_epoch \
-  -hyperparameters ./vulguard_lite/models/deepjit/hyperparameters.json \
-  -dictionary ./models/dictionary.jsonl \
-  -test_set /data/test_deepjit_linux.jsonl \
-  -output_dir ./results/deepjit_gradcam \
-  -target_class 1 \
-  -line_provenance ./results/openssl_line_inputs/line_provenance.jsonl \
+python -m vulguard_lite attribute \ `
+  -repo_language C \ `
+  -model deepjit \ `
+  -device cuda \ `
+  -model_path ./models/best_epoch \ `
+  -hyperparameters ./vulguard_lite/models/deepjit/hyperparameters.json \ `
+  -dictionary ./models/dictionary.jsonl \ `
+  -test_set /data/test_deepjit_linux.jsonl \ `
+  -output_dir ./results/deepjit_gradcam \ `
+  -target_class 1 \ `
   -all_commits
 ```
 
 For SimCom, use `-model simcom`. Pass `features.jsonl,patch.jsonl` when both
 `sim.pkl` and `com.pth` are available, or one patch JSONL with a standalone Com
 checkpoint for Com-only inference. Grad-CAM is always computed from Com only.
-SimCom attribution splits each commit into contiguous 10-row chunks by default
-(`-simcom_chunk_size 10`) and repeats the unchanged commit message for every
-chunk. Full SimCom output records the unchanged Sim score alongside each
-chunk's Com score and their mean. The commit-level prediction summary is the
-maximum chunk probability and is labelled `max_chunk_probability` in metadata.
-The JSONL `chunks` array retains every chunk score/ranking, while
-`chunk_top_lines` and `line_attributions.csv` contain one best source-line
-candidate per chunk when verified provenance is supplied. Chunking must not
-exceed the checkpoint's `code_line` value.
-
-With `-line_provenance`, output also contains `line_attributions.csv` and
-embeds `ranked_lines` plus `uncovered_lines` in the model JSONL. JITFine maps
-attention to lines, DeepJIT uses token-stage Grad-CAM over its flattened merge
-row, and Com uses token-stage Grad-CAM inside observed patch rows. Exact legacy
-serialization is checked before any source line is ranked.
+Full SimCom output records the unchanged Sim score, Com score, their mean,
+component agreement, and whether Com supports the final predicted class. CNN output rows
+are model-input rows rather than verified source lines. Rows omitted by
+`code_line` truncation are reported but never scored.
 
 Attribution is intentionally **observed-only**. The ranking contains only added
 or removed code-token occurrences that survived JITFine's 512-position input
 construction and were actually processed by the transformer. Tokens omitted by
 truncation are outside the attribution scope: they are not ranked and are not
-assigned zero or estimated scores. With a verified provenance sidecar, only
-source lines containing at least one observed token are eligible for line
-ranking; unobserved lines are exported separately with null scores.
+assigned zero or estimated scores. When token-to-line provenance becomes
+available, only source lines containing at least one observed token will be
+eligible for line ranking; lines that the model did not observe will remain out
+of scope.
 
 Omit `-top_k` to export every observed code-token occurrence. Supplying
-`-top_k N` limits each ranking to its first `N` entries; for chunked SimCom,
-the limit is applied independently inside every chunk.
+`-top_k N` deliberately limits each commit's exported ranking to its first `N`
+entries.
 
 Implementation details that affect interpretation:
 
@@ -299,8 +274,7 @@ Implementation details that affect interpretation:
 | `experiment` | Full pipeline: training → validation calibration → test. Supports multiple runs and budget sweeps. |
 | `training` | Fit a model on the training set and save the best checkpoint. |
 | `evaluating` | Run inference on a test (or val) set, compute metrics, and optionally calibrate the decision threshold. |
-| `attribute` | Attribute tokens/rows and optionally rank verified changed lines. |
-| `prepare-lines` | Build provenance-rich merge/patch inputs from Git commit URLs or SHAs. |
+| `attribute` | Attribute JITFine tokens or DeepJIT/SimCom code rows. |
 
 ---
 
@@ -337,6 +311,7 @@ Shared by **all** three sub-commands.
 | `-hf_split_path` | str | `None` | no | Sub-directory in the HF repo identifying a specific data split or cross-validation fold (e.g. `linux/linux_3_1`). The last path component becomes the split tag in output filenames. |
 | `-hf_output_repo_id` | str | `None` | no | HF dataset repo to upload results to. Falls back to `-hf_repo_id` when omitted. |
 | `-hf_upload_result` | bool | `False` | no | Push the experiment output folder to the HF dataset repo after all runs complete. |
+| `-hf_upload_checkpoint_only` | bool | `False` | no | Upload only the run-1 checkpoint for each sampling seed and suppress result-folder uploads. `-hf_upload_model_config_only` is a compatibility alias. |
 
 ---
 
@@ -420,8 +395,6 @@ All **common arguments** plus:
 | `-test_set` | str | — | **yes** | JITFine/full-SimCom pair, DeepJIT merge JSONL, or Com patch JSONL. |
 | `-hyperparameters` | str | — | **yes** | Model hyperparameters JSON. |
 | `-dictionary` | str | `None` | CNN only | DeepJIT/SimCom token dictionary. |
-| `-line_provenance` | str | `None` | no | Sidecar generated by `prepare-lines`; enables changed-line ranking. |
-| `-line_aggregation` | str | `sum` | no | Aggregate observed position scores with `sum`, `mean`, or `max`. |
 | `-output_dir` | str | — | **yes** | Directory for JSONL, CSV, metadata, and summary output. |
 | `-attention_strategy` | str | `last_layer_cls_mean` | no | CLS attention aggregation strategy. |
 | `-top_k` | int | all | no | Limit exported ranked token occurrences per commit. |
@@ -431,6 +404,14 @@ All **common arguments** plus:
 | `-all_commits` | flag | off | no | Explicitly select every commit; this is also the default selection. |
 | `-resume` | flag | off | no | Resume an output with matching input/config fingerprints. |
 | `-overwrite` | flag | off | no | Replace existing attribution artifacts. |
+
+`rank-ground-truth` also supports HF-native inputs. Pass `-hf_repo_id`,
+`-repo_name`, and `-hf_checkpoint_path` instead of local
+`-prepared_dir`/`-model_path`. `-hf_ground_truth_path` defaults to
+`dataset/ground_truth_hunks/<repo_name>`, and CNN dictionaries default to
+`dataset/<repo_name>/dict_<repo_name>.jsonl`. See
+[GROUND_TRUTH_HUNK_PIPELINE.md](GROUND_TRUTH_HUNK_PIPELINE.md) for an OpenSSL
+DeepJIT example using `TheSyx/vulguard_lite`.
 
 ---
 

@@ -1008,7 +1008,45 @@ def rank_ground_truth(args):
     """Run one model and attach its ranking to prepared common ground-truth hunks."""
     from .attribution.runner import attribute
 
-    prepared_root = Path(args.prepared_dir).resolve()
+    artifact_sources = {"source": "local"}
+    prepared_dir = args.prepared_dir
+    model_path = args.model_path
+    dictionary = args.dictionary
+    if args.hf_repo_id:
+        if prepared_dir or model_path:
+            raise ValueError(
+                "Do not mix -prepared_dir/-model_path with Hugging Face ranking inputs"
+            )
+        from .utils.hf_dataset import prepare_hf_ground_truth_ranking_paths
+
+        resolved = prepare_hf_ground_truth_ranking_paths(
+            cache_root=str(Path(args.dg_save_folder).resolve() / "dg_cache"),
+            repo_name=args.repo_name,
+            model_name=args.model,
+            hf_repo_id=args.hf_repo_id,
+            revision=args.hf_revision,
+            ground_truth_path=args.hf_ground_truth_path,
+            checkpoint_path=args.hf_checkpoint_path,
+            dictionary_path=args.hf_dictionary_path,
+        )
+        prepared_dir = resolved["prepared_dir"]
+        model_path = resolved["model_path"]
+        dictionary = resolved.get("dictionary", dictionary)
+        artifact_sources = {
+            "source": "huggingface",
+            "repo_id": args.hf_repo_id,
+            "revision": args.hf_revision,
+            "ground_truth_path": resolved["remote_ground_truth_path"],
+            "checkpoint_path": resolved["remote_checkpoint_path"],
+            "dictionary_path": resolved.get("remote_dictionary_path"),
+        }
+    elif not prepared_dir or not model_path:
+        raise ValueError(
+            "Provide local -prepared_dir and -model_path, or use -hf_repo_id "
+            "with -hf_checkpoint_path"
+        )
+
+    prepared_root = Path(prepared_dir).resolve()
     output_root = Path(args.output_dir).resolve()
     common_hunks_path = prepared_root / "ground_truth_hunks.jsonl"
     full_inputs = prepared_root / "inputs"
@@ -1032,10 +1070,10 @@ def rank_ground_truth(args):
         model=args.model,
         repo_language=args.repo_language,
         device=args.device,
-        model_path=args.model_path,
+        model_path=model_path,
         test_set=test_set,
         hyperparameters=args.hyperparameters,
-        dictionary=args.dictionary,
+        dictionary=dictionary,
         line_provenance=str(provenance_path),
         line_aggregation=args.line_aggregation,
         hunk_chunk_size=args.hunk_chunk_size,
@@ -1065,6 +1103,7 @@ def rank_ground_truth(args):
         "stage": "rank-ground-truth",
         "attribution": attribution_summary,
         "prepared_dir": str(prepared_root),
+        "artifact_sources": artifact_sources,
         "ranking_metrics": ranking_metrics,
     })
     ranked_path = output_root / "ranked_ground_truth_hunks.jsonl"

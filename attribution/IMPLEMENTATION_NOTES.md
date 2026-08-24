@@ -24,13 +24,15 @@ pipeline. Without a provenance sidecar they remain
 file/hunk/source-line provenance. With an exactly matching sidecar, token-stage
 Grad-CAM scores are aggregated onto canonical changed-line IDs.
 
-SimCom attribution splits a patch into contiguous chunks of 10 rows by default,
-never exceeding the checkpoint's `code_line` dimension. The unchanged commit
-message is repeated for every chunk. Local row/token tensor positions are
-translated back to global patch positions before line aggregation, so trailing
-rows are observed instead of truncated. Each chunk keeps its own prediction and
-ranking; the commit export retains the top-ranked source line from every chunk.
-DeepJIT retains its existing single-input truncation behavior.
+DeepJIT and SimCom attribution group canonical changed lines by
+`(file_path, hunk_id)`. Each Git hunk becomes one chunk unless it exceeds 10
+changed source lines, in which case it is split sequentially into subchunks of
+at most 10 lines. Context lines are not counted. The unchanged commit message
+is repeated for every chunk. SimCom preserves change-block rows within each
+hunk slice; DeepJIT rebuilds its `<ADD> ... <REMOVE> ...` merge row for the same
+slice. Local token positions map directly through the chunk's retained line-ID
+lists. Each chunk keeps its own prediction and ranking, and the commit export
+retains the top-ranked source line from every chunk.
 
 DeepJIT/JITFine merge input uses semantic `<ADD>` and `<REMOVE>` regions. The
 historical SimCom patch serializer reverses those marker regions. Provenance

@@ -924,18 +924,17 @@ Implement JITFine attention-to-line aggregation, DeepJIT token-stage Grad-CAM
 and Com row-to-line aggregation. Export deterministic ranked and uncovered
 lines for all three models.
 
-### Phase 7: Chunked attribution for long commits — SIMCOM PILOT IMPLEMENTED
+### Phase 7: Hunk-aware chunked attribution — DEEPJIT/SIMCOM IMPLEMENTED
 
-Split every SimCom patch into contiguous chunks of 10 historical patch rows.
-Repeat the unchanged commit message for every chunk, run prediction and
-hierarchical Grad-CAM independently, translate local tensor positions back to
-global patch rows and canonical line IDs, then retain the top-1 ranked source
-line from every chunk at commit level. Record every per-chunk score and use the
-maximum chunk probability only as the explicitly labelled commit-level
-prediction summary.
-
-After validating the SimCom pilot manually, extend the same contract to
-DeepJIT and JITFine using 512-token chunks while retaining the commit message.
+For DeepJIT and SimCom, never combine different Git hunks in one chunk. Treat
+each hunk as one chunk when it has at most 10 changed source lines; split larger
+hunks sequentially into subchunks of at most 10 changed lines. Context lines do
+not count toward the limit. Repeat the unchanged commit message for every
+chunk, run prediction and hierarchical Grad-CAM independently, translate local
+token positions through retained canonical line IDs, and retain the top-1
+ranked source line from every chunk at commit level. Record every per-chunk
+score and use the maximum chunk probability only as the explicitly labelled
+commit-level prediction summary.
 
 ### Phase 8: Line visualization and interventions — DEFERRED
 
@@ -969,9 +968,10 @@ The current task is complete when:
 20. DeepJIT line ranking uses token-stage attribution rather than treating its flattened merge row as one source line;
 21. uncovered or truncated lines have null scores and are excluded from ranking;
 22. existing checkpoint predictions are preserved within device tolerance.
-23. SimCom commits longer than 10 patch rows are processed without dropping trailing rows;
-24. every SimCom chunk repeats the same commit message and retains its global row range;
-25. the commit result exposes exactly one top-ranked source line per chunk that contains attributable source tokens with verified provenance.
+23. DeepJIT/SimCom chunks never cross a Git file or hunk boundary;
+24. hunks larger than 10 changed source lines are split without dropping trailing lines;
+25. every chunk repeats the same commit message and exposes its file, hunk and subchunk identity;
+26. the commit result exposes exactly one top-ranked source line per chunk that contains attributable source tokens with verified provenance.
 
 ---
 
@@ -994,6 +994,7 @@ The current task is complete when:
 14. DeepJIT token-stage Grad-CAM changed-line ranking.
 15. Com hierarchical Grad-CAM changed-line ranking.
 16. Ranked/uncovered line JSONL and CSV exports plus coverage metadata.
-17. SimCom 10-row chunk attribution with per-chunk diagnostics and commit-level top-1 line candidates.
+17. DeepJIT/SimCom hunk-aware 10-changed-line chunk attribution with per-chunk diagnostics and commit-level top-1 line candidates.
+18. Review-oriented JSONL containing commit oversized-hunk notes and every hunk's source-line rankings.
 
 HTML heatmaps and intervention-based faithfulness remain deferred.

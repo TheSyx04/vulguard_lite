@@ -103,6 +103,113 @@ def _download_files(repo_id, revision, remote_paths, local_root):
     return ",".join(local_paths)
 
 
+def _download_hub_file(repo_id, revision, remote_path, local_root):
+    """Download one dataset-repository artifact using the logged-in HF client."""
+    try:
+        from huggingface_hub import hf_hub_download
+
+        return hf_hub_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=revision,
+            filename=remote_path,
+            local_dir=local_root,
+        )
+    except Exception as exc:
+        raise HFDatasetError(
+            f"Failed to download Hugging Face artifact {remote_path} "
+            f"from {repo_id}@{revision}: {exc}"
+        ) from exc
+
+
+def prepare_hf_ground_truth_ranking_paths(
+    cache_root,
+    repo_name,
+    model_name,
+    hf_repo_id,
+    revision="main",
+    ground_truth_path=None,
+    checkpoint_path=None,
+    dictionary_path=None,
+):
+    """Resolve remote ground-truth inputs and model artifacts into an HF cache.
+
+    ``ground_truth_path`` and ``checkpoint_path`` are paths inside a Hugging
+    Face *dataset* repository. The returned values are local cache paths used
+    only internally by the existing PyTorch/data-loading code.
+    """
+    if not hf_repo_id:
+        raise HFDatasetError("-hf_repo_id is required for Hugging Face ranking inputs.")
+    if not repo_name:
+        raise HFDatasetError("-repo_name is required for Hugging Face ranking inputs.")
+    if not checkpoint_path:
+        raise HFDatasetError(
+            "-hf_checkpoint_path is required because model_config contains "
+            "multiple folds and seeds."
+        )
+
+    ground_truth_path = (
+        ground_truth_path or f"dataset/ground_truth_hunks/{repo_name}"
+    ).strip("/")
+    required_ground_truth = [
+        f"{ground_truth_path}/ground_truth_hunks.jsonl",
+        f"{ground_truth_path}/inputs/line_provenance.jsonl",
+    ]
+    if model_name == "jitfine":
+        required_ground_truth.append(f"{ground_truth_path}/inputs/merge.jsonl")
+    checkpoint_names = {
+        "deepjit": "deepjit.pth",
+        "jitfine": "jitfine.pth",
+        "simcom": "com.pth",
+    }[model_name]
+    checkpoint_path = checkpoint_path.strip("/")
+    checkpoint_is_file = os.path.splitext(checkpoint_path)[1].lower() in {
+        ".pth", ".pkl", ".bin", ".pt",
+    }
+    checkpoint_remote = (
+        checkpoint_path
+        if checkpoint_is_file
+        else f"{checkpoint_path}/{checkpoint_names}"
+    )
+
+    cache_root = os.path.abspath(os.path.join(
+        cache_root,
+        "hf_ground_truth",
+        hf_repo_id.replace("/", "__"),
+        revision,
+    ))
+    for remote_path in required_ground_truth:
+        _download_hub_file(hf_repo_id, revision, remote_path, cache_root)
+    checkpoint_local = _download_hub_file(
+        hf_repo_id, revision, checkpoint_remote, cache_root,
+    )
+
+    resolved = {
+        "prepared_dir": os.path.join(cache_root, ground_truth_path),
+        "model_path": checkpoint_local,
+        "remote_ground_truth_path": ground_truth_path,
+        "remote_checkpoint_path": checkpoint_remote,
+    }
+    if model_name in {"deepjit", "simcom"}:
+        dictionary_remote = (
+            dictionary_path or f"dataset/{repo_name}/dict_{repo_name}.jsonl"
+        ).strip("/")
+        resolved["dictionary"] = _download_hub_file(
+            hf_repo_id, revision, dictionary_remote, cache_root,
+        )
+        resolved["remote_dictionary_path"] = dictionary_remote
+
+    # A SimCom directory may also contain sim.pkl. Preserve full SimCom
+    # inference when it exists; otherwise the downloaded com.pth runs Com-only.
+    if model_name == "simcom" and not checkpoint_is_file:
+        sim_remote = checkpoint_remote[:-len("com.pth")] + "sim.pkl"
+        _download_hub_file(hf_repo_id, revision, sim_remote, cache_root)
+        resolved["model_path"] = os.path.dirname(checkpoint_local)
+        resolved["remote_sim_checkpoint_path"] = sim_remote
+
+    return resolved
+
+
 def prepare_hf_dataset_paths(dg_cache_path, repo_name, model_name, hf_repo_id, revision="main", split_path=None):
     if not hf_repo_id:
         return {}

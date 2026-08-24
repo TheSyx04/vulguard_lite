@@ -200,12 +200,32 @@ def main(args=None):
 
     rank_ground_truth_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     rank_ground_truth_parser.set_defaults(func=rank_ground_truth)
-    rank_ground_truth_parser.add_argument("-prepared_dir", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-prepared_dir", default=None,
+        help="Local prepared ground-truth directory (omit when using -hf_ground_truth_path)",
+    )
     rank_ground_truth_parser.add_argument(
         "-model", choices=["jitfine", "deepjit", "simcom"], required=True,
     )
     rank_ground_truth_parser.add_argument("-device", default="cpu", help="Eg: cpu, cuda, cuda:1")
-    rank_ground_truth_parser.add_argument("-model_path", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-model_path", default=None,
+        help="Local checkpoint file/directory (omit when using -hf_checkpoint_path)",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_ground_truth_path", default=None,
+        help=("Ground-truth directory inside -hf_repo_id; defaults to "
+              "dataset/ground_truth_hunks/<repo_name>"),
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_checkpoint_path", default=None,
+        help="Checkpoint file/directory inside the Hugging Face dataset repository",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_dictionary_path", default=None,
+        help=("CNN dictionary inside the Hugging Face dataset repository; defaults to "
+              "dataset/<repo_name>/dict_<repo_name>.jsonl"),
+    )
     rank_ground_truth_parser.add_argument("-hyperparameters", required=True)
     rank_ground_truth_parser.add_argument(
         "-dictionary", default=None, help="Required for DeepJIT and SimCom",
