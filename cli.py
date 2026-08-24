@@ -226,12 +226,18 @@ def main(args=None):
         help=("CNN dictionary inside the Hugging Face dataset repository; defaults to "
               "dataset/<repo_name>/dict_<repo_name>.jsonl"),
     )
+    rank_ground_truth_parser.add_argument(
+        "-hf_features_path", default=None,
+        help=("JITFine Kamei-feature JSONL inside the Hugging Face dataset repository; "
+              "when omitted, the repository test feature file is auto-detected"),
+    )
     rank_ground_truth_parser.add_argument("-hyperparameters", required=True)
     rank_ground_truth_parser.add_argument(
         "-dictionary", default=None, help="Required for DeepJIT and SimCom",
     )
     rank_ground_truth_parser.add_argument(
-        "-features", default=None, help="Manual feature JSONL required for JITFine",
+        "-features", default=None,
+        help="Local manual feature JSONL required for JITFine local runs",
     )
     rank_ground_truth_parser.add_argument("-output_dir", required=True)
     rank_ground_truth_parser.add_argument("-threshold", type=float_0_1, default=0.5)

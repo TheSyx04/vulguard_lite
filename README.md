@@ -409,7 +409,9 @@ All **common arguments** plus:
 `-repo_name`, and `-hf_checkpoint_path` instead of local
 `-prepared_dir`/`-model_path`. `-hf_ground_truth_path` defaults to
 `dataset/ground_truth_hunks/<repo_name>`, and CNN dictionaries default to
-`dataset/<repo_name>/dict_<repo_name>.jsonl`. See
+`dataset/<repo_name>/dict_<repo_name>.jsonl`. For JITFine, the complete test
+Kamei-feature file is auto-detected under `dataset/<repo_name>`; use
+`-hf_features_path` to override it. See
 [GROUND_TRUTH_HUNK_PIPELINE.md](GROUND_TRUTH_HUNK_PIPELINE.md) for an OpenSSL
 DeepJIT example using `TheSyx/vulguard_lite`.
 

@@ -130,8 +130,8 @@ runs. Do not combine local prepared/checkpoint paths with `-hf_repo_id`.
 ### JITFine
 
 JITFine uses the full commit input plus its 14 manual commit features, then the
-pipeline retains rankings belonging to the common ground-truth hunks. Therefore
-`-features` is required and must align with the prepared commit IDs.
+pipeline retains rankings belonging to the common ground-truth hunks. For a
+local run, `-features` is required and must align with the prepared commit IDs.
 
 ```bash
 python -m vulguard_lite rank-ground-truth \
@@ -146,6 +146,30 @@ python -m vulguard_lite rank-ground-truth \
   -overwrite
 ```
 
+JITFine can also resolve all ranking artifacts from the Hugging Face dataset
+repository. Its full test Kamei-feature file is used so feature scaling stays
+consistent with normal test-time preprocessing; only the prepared commit IDs
+are selected after scaling.
+
+```bash
+python -m vulguard_lite rank-ground-truth \
+  -repo_language C \
+  -repo_name openssl \
+  -model jitfine \
+  -device cpu \
+  -hf_repo_id TheSyx/vulguard_lite \
+  -hf_ground_truth_path dataset/ground_truth_hunks/openssl \
+  -hf_checkpoint_path model_config/openssl/jitfine/openssl_0_1/seed_1 \
+  -hyperparameters /work/vulguard_lite/models/jitfine/hyperparameters.json \
+  -output_dir /data/results/openssl_rankings/jitfine \
+  -metric_top_k 1 3 5 10 \
+  -overwrite
+```
+
+The default JITFine feature lookup searches `dataset/<repo_name>` for the test
+Kamei/TLEL JSONL. Use `-hf_features_path` when the repository uses a different
+layout.
+
 Stage 2 output contains the model's normal attribution exports plus:
 
 ```text
@@ -159,23 +183,62 @@ from different models can be compared without changing ground-truth membership.
 
 ### Ranking metrics
 
-By default the rank stage calculates metrics at `K = 1, 3, 5, 10`:
+The rank stage reports two metric scopes. This distinction is required because
+DeepJIT and SimCom run Grad-CAM independently for each hunk chunk; raw scores
+from different chunks do not share a calibrated global scale.
 
-- absolute vulnerable-line hit count and hit rate at K;
-- ranking coverage and line-level MRR, with unranked ground-truth lines counted
-  as reciprocal rank zero;
-- native-unit MRR and MAP;
-- Hit@K, Recall@K, and NDCG@K;
-- mean/median first vulnerable-line rank;
-- IFA (non-vulnerable lines before the first vulnerable line);
-- EXAM (first vulnerable rank divided by ranked candidate count);
-- Recall@20% LOC and Effort@20% Recall.
+| Scope | DeepJIT/SimCom unit | JITFine unit | Treatment of unranked ground truth |
+|---|---|---|---|
+| Absolute line metrics | All eligible ground-truth lines in the dataset | Same | Retained and counted as misses |
+| Native-unit metrics | One Git-hunk chunk | One complete commit | Only units with at least one ranked relevant line are evaluated |
 
-The native ranking unit is a hunk chunk for DeepJIT/SimCom and a complete commit
-for JITFine. This avoids pretending that independently attributed CNN chunks
-share one comparable score scale. Native-unit metrics are observed-only;
-absolute hit rates retain every eligible ground-truth line and treat an
-unranked line as a miss.
+For the definitions below, `N` is the number of ranked candidates in a native
+unit, `R` is the number of ranked relevant (vulnerable) lines in that unit, and
+`r_i` is the native rank of relevant line `i`. Ranks are one-based. By default,
+the pipeline evaluates `K = 1, 3, 5, 10`.
+
+#### Absolute line metrics
+
+These metrics use every eligible ground-truth line as the denominator and are
+therefore the primary metrics for reporting localization coverage.
+
+| JSON field | Definition |
+|---|---|
+| `ground_truth_line_count` | Total number of unique eligible vulnerable lines. |
+| `ranked_ground_truth_line_count` | Vulnerable lines that received a native rank. |
+| `unranked_ground_truth_line_count` | Eligible vulnerable lines with no rank, including lines not observed because of serialization or truncation. |
+| `ranking_coverage` | `ranked_ground_truth_line_count / ground_truth_line_count`. |
+| `line_mrr_unranked_as_zero` | Mean of `1 / r_i` across all eligible vulnerable lines; an unranked line contributes `0`. |
+| `absolute_hit_count_at_K` | Number of all eligible vulnerable lines whose native rank is at most `K`. |
+| `absolute_hit_rate_at_K` | `absolute_hit_count_at_K / ground_truth_line_count`; unranked lines are misses. |
+| `recall_at_K_among_ranked_lines` | `absolute_hit_count_at_K / ranked_ground_truth_line_count`; this excludes unranked lines and must be read together with coverage. |
+| `mean_rank_ranked_lines` / `median_rank_ranked_lines` | Mean/median native rank over ranked vulnerable lines only. |
+| `mean_rank_percentile_ranked_lines` | Mean of `r_i / N` over ranked vulnerable lines for which the native candidate count is known. Lower is better. |
+
+#### Native-unit metrics
+
+Per-unit values are written to `ranking_metrics_by_unit.jsonl`. Aggregate
+fields in `ranked_ground_truth_summary.json` are arithmetic means over evaluated
+native units. A native unit is evaluated only when it contains at least one
+ranked relevant line, so these observed-only metrics must not be interpreted as
+dataset-wide coverage.
+
+| Metric / JSON field | Per-unit definition | Better |
+|---|---|---|
+| Reciprocal rank / `mrr` | `1 / min(r_i)`; aggregate MRR is its mean over units. | Higher |
+| Average precision / `map` | `AP = (1 / R) * sum(j / r_(j))`, where relevant ranks are sorted and `j` starts at 1; MAP is mean AP. | Higher |
+| `hit_at_K` / `hit_rate_at_K` | Per unit: `1` if any `r_i <= K`, otherwise `0`; aggregate is the fraction of evaluated units hit at K. | Higher |
+| `recall_at_K` / `mean_recall_at_K` | Per unit: `count(r_i <= K) / R`; aggregate is the mean over units. | Higher |
+| `ndcg_at_K` / `mean_ndcg_at_K` | Binary-relevance DCG at K divided by ideal DCG for `min(R, K)` relevant lines. | Higher |
+| `first_relevant_rank` | `min(r_i)`. The summary reports its mean and median. | Lower |
+| IFA / `initial_false_alarms` | `first_relevant_rank - 1`: non-vulnerable candidates inspected before the first vulnerable line. | Lower |
+| EXAM / `exam` | `first_relevant_rank / N`: fraction of the native candidate list inspected before the first vulnerable line is found. | Lower |
+| `recall_at_F_loc` | Recall after inspecting the first `max(1, ceil(F * N))` candidates. With the default `F=0.2`, this is Recall@20% LOC. | Higher |
+| `effort_at_F_recall` | Rank required to find `max(1, ceil(F * R))` relevant lines, divided by `N`. With `F=0.2`, this is Effort@20% Recall. | Lower |
+
+The summary prefixes aggregated effort-aware metrics with `mean_`, for example
+`mean_recall_at_0.2_loc` and `mean_effort_at_0.2_recall`. It also records
+`evaluated_unit_count`, which should always accompany native-unit results.
 
 Customize the cutoffs and effort fraction with:
 
@@ -187,7 +250,9 @@ Aggregate metrics and their definitions are embedded in
 `ranked_ground_truth_summary.json`. Per-unit diagnostics are written to
 `ranking_metrics_by_unit.jsonl`, while per-ground-truth-line rank and coverage
 details are stored under `ranking_metrics.ground_truth_line_results` in the
-summary.
+summary. Each line result contains its native `rank`, `candidate_count`,
+`reciprocal_rank`, and `rank_percentile`; unranked lines have `rank: null` and
+`reciprocal_rank: 0.0`.
 
 Use `-resume` instead of `-overwrite` after an interrupted rank run. Do not pass
 both flags.

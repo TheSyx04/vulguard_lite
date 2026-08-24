@@ -131,6 +131,7 @@ def prepare_hf_ground_truth_ranking_paths(
     ground_truth_path=None,
     checkpoint_path=None,
     dictionary_path=None,
+    features_path=None,
 ):
     """Resolve remote ground-truth inputs and model artifacts into an HF cache.
 
@@ -198,6 +199,32 @@ def prepare_hf_ground_truth_ranking_paths(
             hf_repo_id, revision, dictionary_remote, cache_root,
         )
         resolved["remote_dictionary_path"] = dictionary_remote
+
+    if model_name == "jitfine":
+        if features_path:
+            features_remote = features_path.strip("/")
+        else:
+            repo_files = _list_dataset_files(hf_repo_id, revision=revision)
+            dataset_prefix = f"dataset/{repo_name}/"
+            features_remote = _pick_file(
+                repo_files,
+                dataset_prefix,
+                [
+                    f"test_tlel_{repo_name}.jsonl",
+                    f"out_test_tlel_{repo_name}.jsonl",
+                    f"test_Kamei_features_{repo_name}.jsonl",
+                    f"out_test_Kamei_features_{repo_name}.jsonl",
+                ],
+            )
+            if not features_remote:
+                raise HFDatasetError(
+                    "Could not resolve the JITFine test Kamei-features file under "
+                    f"{dataset_prefix}. Pass -hf_features_path explicitly."
+                )
+        resolved["features"] = _download_hub_file(
+            hf_repo_id, revision, features_remote, cache_root,
+        )
+        resolved["remote_features_path"] = features_remote
 
     # A SimCom directory may also contain sim.pkl. Preserve full SimCom
     # inference when it exists; otherwise the downloaded com.pth runs Com-only.

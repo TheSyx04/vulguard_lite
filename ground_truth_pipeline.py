@@ -1012,10 +1012,11 @@ def rank_ground_truth(args):
     prepared_dir = args.prepared_dir
     model_path = args.model_path
     dictionary = args.dictionary
+    features = args.features
     if args.hf_repo_id:
-        if prepared_dir or model_path:
+        if prepared_dir or model_path or features:
             raise ValueError(
-                "Do not mix -prepared_dir/-model_path with Hugging Face ranking inputs"
+                "Do not mix -prepared_dir/-model_path/-features with Hugging Face ranking inputs"
             )
         from .utils.hf_dataset import prepare_hf_ground_truth_ranking_paths
 
@@ -1028,10 +1029,12 @@ def rank_ground_truth(args):
             ground_truth_path=args.hf_ground_truth_path,
             checkpoint_path=args.hf_checkpoint_path,
             dictionary_path=args.hf_dictionary_path,
+            features_path=getattr(args, "hf_features_path", None),
         )
         prepared_dir = resolved["prepared_dir"]
         model_path = resolved["model_path"]
         dictionary = resolved.get("dictionary", dictionary)
+        features = resolved.get("features", features)
         artifact_sources = {
             "source": "huggingface",
             "repo_id": args.hf_repo_id,
@@ -1039,6 +1042,7 @@ def rank_ground_truth(args):
             "ground_truth_path": resolved["remote_ground_truth_path"],
             "checkpoint_path": resolved["remote_checkpoint_path"],
             "dictionary_path": resolved.get("remote_dictionary_path"),
+            "features_path": resolved.get("remote_features_path"),
         }
     elif not prepared_dir or not model_path:
         raise ValueError(
@@ -1059,11 +1063,11 @@ def rank_ground_truth(args):
         code_file = inputs["merge" if args.model == "deepjit" else "patch"]
         test_set = str(code_file)
     else:
-        if not args.features:
+        if not features:
             raise ValueError("-features_is_required_for_jitfine")
         provenance_path = full_inputs / "line_provenance.jsonl"
         code_file = full_inputs / "merge.jsonl"
-        test_set = f"{Path(args.features).resolve()},{code_file}"
+        test_set = f"{Path(features).resolve()},{code_file}"
 
     attribution_dir = output_root / "attribution"
     attribution_summary = attribute(SimpleNamespace(
