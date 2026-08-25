@@ -7,9 +7,9 @@
 #   seeds   = 1..5
 # This is 3 * 16 * 5 = 240 independent GPU tasks.  At most four run at once.
 #
-# Submit on sutd_mega from the repository root:
-#   mkdir -p vulguard_logs/line_ranking
-#   qsub -v HF_TOKEN scripts/run_line_ranking_sutd.pbs
+# Submit on sutd_mega through the argument-based wrapper:
+#   scripts/submit_line_ranking_sutd.sh --dataset openssl --model jitfine \
+#     --x-values "0" --y-values "1 2 3" --seeds "1 2 3 4 5"
 #
 # PBS_O_WORKDIR is used as the repository root. Override REPO_DIR when the job
 # is submitted elsewhere. Values passed with qsub -v must be comma-free, so
@@ -34,6 +34,7 @@ CONFIG_X="${CONFIG_X:-0;1;2;3}"
 CONFIG_Y="${CONFIG_Y:-0;1;2;3}"
 CONFIGS="${CONFIGS:-}"
 SEEDS="${SEEDS:-1;2;3;4;5}"
+RESUME="${RESUME:-True}"
 HF_REPO_ID="${HF_REPO_ID:-TheSyx/vulguard_lite}"
 HF_REVISION="${HF_REVISION:-main}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_DIR/output/line_ranking}"
@@ -132,8 +133,13 @@ command=(
     -hyperparameters "$hyperparameters"
     -output_dir "$output_dir"
     -metric_top_k 1 3 5 10
-    -resume
 )
+
+case "${RESUME,,}" in
+    true|1|yes) command+=(-resume) ;;
+    false|0|no) ;;
+    *) echo "RESUME must be True or False, got: $RESUME" >&2; exit 2 ;;
+esac
 
 printf 'Command:'
 printf ' %q' "${command[@]}"
