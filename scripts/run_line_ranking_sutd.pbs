@@ -18,7 +18,7 @@
 #
 #PBS -N line_rank
 #PBS -q v100q
-#PBS -l select=1:mem=30GB:ncpus=10:ngpus=1
+#PBS -l select=1:mem=10GB:ncpus=5:ngpus=1
 #PBS -l walltime=48:00:00
 #PBS -P 20260203
 #PBS -J 0-239%4
