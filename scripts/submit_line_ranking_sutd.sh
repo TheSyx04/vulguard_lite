@@ -43,7 +43,7 @@ Examples:
 
   scripts/submit_line_ranking_sutd.sh \
     --dataset linux --model deepjit \
-    --x-values "0 1 2 3" --y-values "0 1 2 3" --resume True
+    --x-values "0 1 2 3" --y-values "1 2 3" --resume True
 EOF
 }
 
