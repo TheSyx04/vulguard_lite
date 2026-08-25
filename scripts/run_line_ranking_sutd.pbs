@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Run one ground-truth line-ranking pass for every model/config/seed tuple.
+#
+# Default matrix:
+#   models  = jitfine, deepjit, simcom
+#   configs = <dataset>_{0..3}_{0..3}
+#   seeds   = 1..5
+# This is 3 * 16 * 5 = 240 independent GPU tasks.  At most four run at once.
+#
+# Submit on sutd_mega from the repository root:
+#   mkdir -p vulguard_logs/line_ranking
+#   qsub -v HF_TOKEN scripts/run_line_ranking_sutd.pbs
+#
+# PBS_O_WORKDIR is used as the repository root. Override REPO_DIR when the job
+# is submitted elsewhere. Values passed with qsub -v must be comma-free, so
+# list overrides use semicolons, for example:
+#   qsub -J 0-4 -v HF_TOKEN,MODELS=jitfine,CONFIGS=openssl_0_1,SEEDS=1\;2\;3\;4\;5 scripts/run_line_ranking_sutd.pbs
+#
+#PBS -N line_rank
+#PBS -q v100q
+#PBS -l select=1:mem=30GB:ncpus=10:ngpus=1
+#PBS -l walltime=48:00:00
+#PBS -P 20260203
+#PBS -J 0-239%4
+#PBS -j oe
+
+set -euo pipefail
+
+REPO_DIR="${REPO_DIR:-${PBS_O_WORKDIR:-}}"
+CONDA_ENV="${CONDA_ENV:-vulguard_lite}"
+DATASET="${DATASET:-openssl}"
+MODELS="${MODELS:-jitfine;deepjit;simcom}"
+CONFIG_X="${CONFIG_X:-0;1;2;3}"
+CONFIG_Y="${CONFIG_Y:-0;1;2;3}"
+CONFIGS="${CONFIGS:-}"
+SEEDS="${SEEDS:-1;2;3;4;5}"
+HF_REPO_ID="${HF_REPO_ID:-TheSyx/vulguard_lite}"
+HF_REVISION="${HF_REVISION:-main}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_DIR/output/line_ranking}"
+LOG_ROOT="${LOG_ROOT:-$REPO_DIR/vulguard_logs/line_ranking}"
+CACHE_ROOT="${CACHE_ROOT:-$REPO_DIR/dg_cache/line_ranking}"
+CONDA_SH="${CONDA_SH:-/app/anaconda3/etc/profile.d/conda.sh}"
+
+if [[ ! -d "$REPO_DIR" ]]; then
+    echo "Repository directory does not exist: $REPO_DIR" >&2
+    exit 2
+fi
+if [[ ! -f "$CONDA_SH" ]]; then
+    echo "Conda initialization script does not exist: $CONDA_SH" >&2
+    exit 2
+fi
+
+IFS=';' read -r -a MODEL_ARRAY <<< "$MODELS"
+IFS=';' read -r -a SEED_ARRAY <<< "$SEEDS"
+
+if [[ -n "$CONFIGS" ]]; then
+    IFS=';' read -r -a CONFIG_ARRAY <<< "$CONFIGS"
+else
+    IFS=';' read -r -a X_ARRAY <<< "$CONFIG_X"
+    IFS=';' read -r -a Y_ARRAY <<< "$CONFIG_Y"
+    CONFIG_ARRAY=()
+    for x in "${X_ARRAY[@]}"; do
+        for y in "${Y_ARRAY[@]}"; do
+            CONFIG_ARRAY+=("${DATASET}_${x}_${y}")
+        done
+    done
+fi
+
+model_count=${#MODEL_ARRAY[@]}
+config_count=${#CONFIG_ARRAY[@]}
+seed_count=${#SEED_ARRAY[@]}
+task_count=$((model_count * config_count * seed_count))
+task_index="${PBS_ARRAY_INDEX:-${PBS_ARRAYID:-${TASK_INDEX:-0}}}"
+
+if ((task_index < 0 || task_index >= task_count)); then
+    echo "Array index $task_index is outside this matrix (0-$((task_count - 1))); nothing to do."
+    exit 0
+fi
+
+# Seed changes fastest, followed by config, then model.
+seed_index=$((task_index % seed_count))
+config_index=$(((task_index / seed_count) % config_count))
+model_index=$((task_index / (seed_count * config_count)))
+
+model="${MODEL_ARRAY[$model_index]}"
+config="${CONFIG_ARRAY[$config_index]}"
+seed="${SEED_ARRAY[$seed_index]}"
+
+case "$model" in
+    jitfine|deepjit|simcom) ;;
+    *) echo "Unsupported line-ranking model: $model" >&2; exit 2 ;;
+esac
+
+output_dir="$OUTPUT_ROOT/$DATASET/$model/$config/seed_$seed"
+log_dir="$LOG_ROOT/$DATASET/$model/$config"
+log_file="$log_dir/seed_$seed.log"
+checkpoint_path="model_config/$DATASET/$model/$config/seed_$seed"
+hyperparameters="$REPO_DIR/models/$model/hyperparameters.json"
+
+mkdir -p "$output_dir" "$log_dir" "$CACHE_ROOT"
+exec > >(tee -a "$log_file") 2>&1
+
+echo "Started       : $(date --iso-8601=seconds)"
+echo "Host          : $(hostname)"
+echo "Array task    : $task_index / $((task_count - 1))"
+echo "Dataset       : $DATASET"
+echo "Model/config  : $model / $config"
+echo "Seed          : $seed"
+echo "HF checkpoint : $checkpoint_path"
+echo "Output        : $output_dir"
+
+# shellcheck disable=SC1090
+source "$CONDA_SH"
+conda activate "$CONDA_ENV"
+
+project_parent="$(dirname "$REPO_DIR")"
+export PYTHONPATH="$project_parent${PYTHONPATH:+:$PYTHONPATH}"
+export HF_HOME="${HF_HOME:-$CACHE_ROOT/huggingface}"
+cd "$project_parent"
+
+command=(
+    python -m vulguard_lite rank-ground-truth
+    -repo_language C
+    -repo_name "$DATASET"
+    -model "$model"
+    -device cuda:0
+    -dg_save_folder "$CACHE_ROOT"
+    -hf_repo_id "$HF_REPO_ID"
+    -hf_revision "$HF_REVISION"
+    -hf_ground_truth_path "dataset/ground_truth_hunks/$DATASET"
+    -hf_checkpoint_path "$checkpoint_path"
+    -hyperparameters "$hyperparameters"
+    -output_dir "$output_dir"
+    -metric_top_k 1 3 5 10
+    -resume
+)
+
+printf 'Command:'
+printf ' %q' "${command[@]}"
+printf '\n'
+"${command[@]}"
+
+echo "Completed     : $(date --iso-8601=seconds)"
