@@ -1004,6 +1004,30 @@ def evaluate_ranking_metrics(
     }, unit_metrics
 
 
+def _line_ranking_hf_output_path(repo_name, model, checkpoint_path, custom_output=None):
+    """Return a collision-free HF directory for one config/seed ranking."""
+    if custom_output:
+        normalized_output = custom_output.strip("/")
+        if not normalized_output:
+            raise ValueError("-hf_output_folder must not be empty")
+        return normalized_output
+    checkpoint_parts = (
+        PurePosixPath(checkpoint_path.strip("/")).parts
+        if checkpoint_path else ()
+    )
+    if len(checkpoint_parts) >= 2 and checkpoint_parts[-1].startswith("seed_"):
+        config, seed = checkpoint_parts[-2:]
+    elif len(checkpoint_parts) >= 3 and checkpoint_parts[-2].startswith("seed_"):
+        config, seed = checkpoint_parts[-3:-1]
+    else:
+        raise ValueError(
+            "Cannot derive the line-ranking HF output path. Pass "
+            "-hf_output_folder, or use an -hf_checkpoint_path ending "
+            "in <config>/seed_<seed>."
+        )
+    return f"line_ranking/{repo_name}/{model}/{config}/{seed}"
+
+
 def rank_ground_truth(args):
     """Run one model and attach its ranking to prepared common ground-truth hunks."""
     from .attribution.runner import attribute
@@ -1110,6 +1134,28 @@ def rank_ground_truth(args):
         "artifact_sources": artifact_sources,
         "ranking_metrics": ranking_metrics,
     })
+    upload_repo_id = None
+    upload_path = None
+    if getattr(args, "hf_upload_result", False):
+        upload_repo_id = (
+            getattr(args, "hf_output_repo_id", None)
+            or getattr(args, "hf_repo_id", None)
+        )
+        if not upload_repo_id:
+            raise ValueError(
+                "-hf_output_repo_id or -hf_repo_id is required when "
+                "-hf_upload_result is True."
+            )
+        upload_path = _line_ranking_hf_output_path(
+            repo_name=args.repo_name,
+            model=args.model,
+            checkpoint_path=getattr(args, "hf_checkpoint_path", None),
+            custom_output=getattr(args, "hf_output_folder", None),
+        )
+        summary["hf_output"] = {
+            "repo_id": upload_repo_id,
+            "path": upload_path,
+        }
     ranked_path = output_root / "ranked_ground_truth_hunks.jsonl"
     summary_path = output_root / "ranked_ground_truth_summary.json"
     unit_metrics_path = output_root / "ranking_metrics_by_unit.jsonl"
@@ -1136,5 +1182,19 @@ def rank_ground_truth(args):
     if attribution_summary.get("failed"):
         raise RuntimeError(
             f"attribution_failed_for_{attribution_summary['failed']}_commits;see={attribution_dir / 'summary.json'}"
+        )
+    if upload_path:
+        from .utils.hf_upload import upload_folder_to_hf_dataset
+
+        print(f"Uploading line-ranking results to HF dataset: {upload_repo_id}/{upload_path}")
+        upload_folder_to_hf_dataset(
+            local_folder=str(output_root),
+            repo_id=upload_repo_id,
+            path_in_repo=upload_path,
+            commit_message=(
+                f"Upload {args.repo_name}/{args.model} line ranking "
+                f"for {PurePosixPath(upload_path).parts[-2]}/"
+                f"{PurePosixPath(upload_path).parts[-1]}"
+            ),
         )
     return summary

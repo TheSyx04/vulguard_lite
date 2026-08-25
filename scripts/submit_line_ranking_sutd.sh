@@ -13,6 +13,9 @@ X_VALUES=""
 Y_VALUES=""
 SEEDS="1 2 3 4 5"
 RESUME="True"
+HF_REPO_ID="TheSyx/vulguard_lite"
+HF_OUTPUT_REPO_ID=""
+UPLOAD_RESULTS="True"
 MAX_CONCURRENT="4"
 DRY_RUN="False"
 
@@ -29,6 +32,11 @@ Required:
 Optional:
   --seeds "LIST"          Checkpoint seeds (default: "1 2 3 4 5")
   --resume BOOL           Resume existing ranking output (default: True)
+  --hf-repo-id ID         HF dataset containing inputs/checkpoints
+                           (default: TheSyx/vulguard_lite)
+  --hf-output-repo-id ID  HF dataset receiving ranking results
+                           (default: same as --hf-repo-id)
+  --upload-results BOOL   Upload each completed ranking output (default: True)
   --max-concurrent N      Maximum simultaneous PBS array tasks (default: 4)
   --dry-run               Print the qsub command without submitting
   -h, --help              Show this help
@@ -63,6 +71,9 @@ while [[ $# -gt 0 ]]; do
         --y-values) require_value "$@"; Y_VALUES="$2"; shift 2 ;;
         --seeds) require_value "$@"; SEEDS="$2"; shift 2 ;;
         --resume) require_value "$@"; RESUME="$2"; shift 2 ;;
+        --hf-repo-id) require_value "$@"; HF_REPO_ID="$2"; shift 2 ;;
+        --hf-output-repo-id) require_value "$@"; HF_OUTPUT_REPO_ID="$2"; shift 2 ;;
+        --upload-results) require_value "$@"; UPLOAD_RESULTS="$2"; shift 2 ;;
         --max-concurrent) require_value "$@"; MAX_CONCURRENT="$2"; shift 2 ;;
         --dry-run) DRY_RUN="True"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -90,6 +101,10 @@ esac
 case "${RESUME,,}" in
     true|false|1|0|yes|no) ;;
     *) echo "--resume must be True or False" >&2; exit 2 ;;
+esac
+case "${UPLOAD_RESULTS,,}" in
+    true|false|1|0|yes|no) ;;
+    *) echo "--upload-results must be True or False" >&2; exit 2 ;;
 esac
 if [[ ! "$MAX_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
     echo "--max-concurrent must be a positive integer" >&2
@@ -119,7 +134,8 @@ last_index=$((task_count - 1))
 config_x="${X_VALUES// /;}"
 config_y="${Y_VALUES// /;}"
 seed_list="${SEEDS// /;}"
-pbs_variables="HF_TOKEN,REPO_DIR=$REPO_DIR,DATASET=$DATASET,MODELS=$MODEL,CONFIG_X=$config_x,CONFIG_Y=$config_y,SEEDS=$seed_list,RESUME=$RESUME"
+HF_OUTPUT_REPO_ID="${HF_OUTPUT_REPO_ID:-$HF_REPO_ID}"
+pbs_variables="HF_TOKEN,REPO_DIR=$REPO_DIR,DATASET=$DATASET,MODELS=$MODEL,CONFIG_X=$config_x,CONFIG_Y=$config_y,SEEDS=$seed_list,RESUME=$RESUME,HF_REPO_ID=$HF_REPO_ID,HF_OUTPUT_REPO_ID=$HF_OUTPUT_REPO_ID,HF_UPLOAD_RESULT=$UPLOAD_RESULTS"
 
 command=(
     qsub
@@ -133,6 +149,7 @@ echo "Config X/Y    : ${X_ARRAY[*]} / ${Y_ARRAY[*]}"
 echo "Seeds         : ${SEED_ARRAY[*]}"
 echo "Array tasks   : $task_count (max concurrent: $MAX_CONCURRENT)"
 echo "Resume        : $RESUME"
+echo "HF upload     : $UPLOAD_RESULTS -> $HF_OUTPUT_REPO_ID"
 printf 'Command:'
 printf ' %q' "${command[@]}"
 printf '\n'

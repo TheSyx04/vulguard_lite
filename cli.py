@@ -84,8 +84,8 @@ def main(args=None):
     common_parser.add_argument("-hf_repo_id", type=str, default=None, help="Hugging Face dataset repo id used when train/val/test files are not passed explicitly")
     common_parser.add_argument("-hf_revision", type=str, default="main", help="Hugging Face dataset revision or branch")
     common_parser.add_argument("-hf_split_path", type=str, default=None, help="Optional subdirectory in the HF dataset repo to pin a specific split/fold")
-    common_parser.add_argument("-hf_output_repo_id", type=str, default=None, help="Hugging Face dataset repo id used to upload experiment outputs")
-    common_parser.add_argument("-hf_upload_result", type=str2bool, default=False, help="Upload final experiment outputs to Hugging Face dataset repo (True/False)")
+    common_parser.add_argument("-hf_output_repo_id", type=str, default=None, help="Hugging Face dataset repo id used to upload outputs")
+    common_parser.add_argument("-hf_upload_result", type=str2bool, default=False, help="Upload final outputs to Hugging Face dataset repo (True/False)")
     common_parser.add_argument(
         "-hf_upload_checkpoint_only",
         "-hf_upload_model_config_only",
@@ -240,6 +240,11 @@ def main(args=None):
         help="Local manual feature JSONL required for JITFine local runs",
     )
     rank_ground_truth_parser.add_argument("-output_dir", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-hf_output_folder", default=None,
+        help=("Custom remote output directory inside the HF dataset repository. "
+              "When omitted, uploads use line_ranking/<repo>/<model>/<config>/<seed>."),
+    )
     rank_ground_truth_parser.add_argument("-threshold", type=float_0_1, default=0.5)
     rank_ground_truth_parser.add_argument("-target_class", type=int, choices=[0, 1], default=1)
     rank_ground_truth_parser.add_argument(

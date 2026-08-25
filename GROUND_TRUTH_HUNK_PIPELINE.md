@@ -181,6 +181,31 @@ ranking_metrics_by_unit.jsonl
 Each ranked record preserves the common hunk and adds `model_ranking`, so outputs
 from different models can be compared without changing ground-truth membership.
 
+### Upload ranking outputs to Hugging Face
+
+Pass `-hf_upload_result True` to upload a successful ranking directory. The
+destination dataset defaults to `-hf_repo_id`; override it with
+`-hf_output_repo_id`. For HF checkpoint inputs, the default remote path is:
+
+```text
+line_ranking/<repo_name>/<model>/<config>/seed_<seed>
+```
+
+Use `-hf_output_folder` to override that path. Existing completed results can
+be uploaded without rerunning attribution:
+
+```bash
+python scripts/upload_line_ranking_results.py \
+  --output-root /data/output/line_ranking \
+  --dataset linux \
+  --model simcom \
+  --hf-repo-id TheSyx/vulguard_lite
+```
+
+The backfill command refuses to upload when any discovered seed directory is
+missing its ranked hunks, summary, or per-unit metrics file. Pass
+`--skip-incomplete` to upload only complete config/seed directories.
+
 ### Ranking metrics
 
 The rank stage reports two metric scopes. This distinction is required because
