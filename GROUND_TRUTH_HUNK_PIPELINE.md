@@ -206,6 +206,23 @@ The backfill command refuses to upload when any discovered seed directory is
 missing its ranked hunks, summary, or per-unit metrics file. Pass
 `--skip-incomplete` to upload only complete config/seed directories.
 
+Aggregate every uploaded experiment into one Excel workbook with one sheet for
+each dataset:
+
+```bash
+python scripts/aggregate_line_ranking_results.py \
+  --hf-repo-id TheSyx/vulguard_lite \
+  --output line_ranking_results.xlsx
+```
+
+The default sheets are `openssl` and `linux`. Each row represents one
+model/config/seed experiment and contains the flattened aggregate fields from
+`ranked_ground_truth_summary.json`. The command checks that the discovered
+three-model config/seed matrix is complete before writing. Use
+`--allow-incomplete` for an in-progress upload. Because CSV files do not support
+multiple sheets, pass `--csv-dir line_ranking_csv` to additionally create one
+CSV file per dataset.
+
 For JITFine, a ground-truth commit absent from the supplied manual-feature file
 is recorded as skipped and remains unranked; it contributes a miss to absolute
 coverage metrics rather than failing the whole job. Attribution records with

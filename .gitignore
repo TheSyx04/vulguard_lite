@@ -46,3 +46,4 @@ scripts/*
 !scripts/run_line_ranking_sutd.pbs
 !scripts/submit_line_ranking_sutd.sh
 !scripts/upload_line_ranking_results.py
+!scripts/aggregate_line_ranking_results.py
