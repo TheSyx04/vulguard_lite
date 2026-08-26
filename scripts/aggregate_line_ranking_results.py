@@ -14,7 +14,7 @@ import re
 import sys
 
 import pandas as pd
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
 
 
 DEFAULT_DATASETS = ("openssl", "linux")
@@ -62,14 +62,30 @@ def flatten_summary(value, prefix=""):
 
 
 def download_summary(repo_id, revision, remote_path):
-    local_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=remote_path,
-        repo_type="dataset",
-        revision=revision,
-    )
-    with open(local_path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=remote_path,
+            repo_type="dataset",
+            revision=revision,
+        )
+        with open(local_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except OSError as cache_error:
+        # On Windows, HF's cache may occasionally fail to create a snapshot
+        # symlink with WinError 1314 when Developer Mode is disabled. Reading
+        # through HfFileSystem bypasses that local symlink without requiring
+        # administrator privileges. If this also fails, retain both causes.
+        filesystem = HfFileSystem()
+        filesystem_path = f"datasets/{repo_id}/{remote_path}"
+        try:
+            with filesystem.open(filesystem_path, "rb", revision=revision) as handle:
+                return json.load(handle)
+        except Exception as direct_error:
+            raise RuntimeError(
+                f"cache download failed ({cache_error}); "
+                f"direct HF read also failed ({direct_error})"
+            ) from direct_error
 
 
 def natural_key(value):

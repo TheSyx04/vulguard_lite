@@ -205,6 +205,9 @@ python scripts/upload_line_ranking_results.py \
 The backfill command refuses to upload when any discovered seed directory is
 missing its ranked hunks, summary, or per-unit metrics file. Pass
 `--skip-incomplete` to upload only complete config/seed directories.
+Before uploading, it lists the destination dataset repo and skips every local
+file whose destination path already exists. It therefore adds only missing
+files and never overwrites an existing uploaded result.
 
 Aggregate every uploaded experiment into one Excel workbook with one sheet for
 each dataset:
