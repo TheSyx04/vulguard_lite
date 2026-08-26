@@ -206,6 +206,11 @@ The backfill command refuses to upload when any discovered seed directory is
 missing its ranked hunks, summary, or per-unit metrics file. Pass
 `--skip-incomplete` to upload only complete config/seed directories.
 
+For JITFine, a ground-truth commit absent from the supplied manual-feature file
+is recorded as skipped and remains unranked; it contributes a miss to absolute
+coverage metrics rather than failing the whole job. Attribution records with
+other failures are retried by `-resume` and block result upload until resolved.
+
 ### Ranking metrics
 
 The rank stage reports two metric scopes. This distinction is required because

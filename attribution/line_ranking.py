@@ -18,6 +18,13 @@ def verify_serialization(provenance: Dict, code_change: str, kind: str) -> None:
 
 def _tokenize_segments(tokenizer, segments: List[Dict], model_region: str):
     selected = [segment for segment in segments if segment["model_region"] == model_region]
+    # Historical merge serialization always leaves one space after each
+    # marker. RoBERTa represents a whitespace-only empty region as the `Ġ`
+    # token. Validate that observed model token, but do not attach it to a
+    # source line because the region contains no changed line.
+    if not selected:
+        empty_region_tokens = tokenizer.tokenize(" ")
+        return empty_region_tokens, [None] * len(empty_region_tokens)
     full_text = "".join(" " + segment["text"] for segment in selected)
     expected = tokenizer.tokenize(full_text)
     tokens, line_ids = [], []
@@ -43,7 +50,8 @@ def jitfine_position_line_ids(tokenizer, example, provenance: Dict) -> Dict[int,
         if observed_expected != observed_actual:
             raise ValueError(f"{region}_observed_token_alignment_mismatch")
         mapping.update({position: line_id for position, line_id in
-                        zip(positions, line_ids[:len(positions)])})
+                        zip(positions, line_ids[:len(positions)])
+                        if line_id is not None})
     return mapping
 
 

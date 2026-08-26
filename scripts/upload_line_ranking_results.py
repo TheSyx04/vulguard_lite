@@ -2,6 +2,7 @@
 """Upload an already-completed line-ranking model tree to an HF dataset."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -23,6 +24,17 @@ def completed_seed_directories(model_root):
     incomplete = []
     for directory in seed_directories:
         missing = sorted(name for name in REQUIRED_RESULTS if not (directory / name).is_file())
+        attribution_summary = directory / "attribution" / "summary.json"
+        if not attribution_summary.is_file():
+            missing.append("attribution/summary.json")
+        else:
+            try:
+                with attribution_summary.open("r", encoding="utf-8") as handle:
+                    failed = int(json.load(handle).get("failed", 0))
+                if failed:
+                    missing.append(f"attribution_failed={failed}")
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                missing.append("invalid_attribution_summary")
         if missing:
             incomplete.append((directory, missing))
     return seed_directories, incomplete

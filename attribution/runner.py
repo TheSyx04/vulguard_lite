@@ -222,7 +222,12 @@ def attribute_jitfine(args):
         _validate_resume_metadata(metadata_path, run_metadata)
     write_json(metadata_path, run_metadata)
 
-    records: List[Dict[str, Any]] = load_jsonl(jsonl_path) if args.resume else []
+    loaded_records = load_jsonl(jsonl_path) if args.resume else []
+    # A failed commit is not complete: retry it on resume while retaining
+    # successful and deliberately skipped records.
+    records: List[Dict[str, Any]] = [
+        record for record in loaded_records if record.get("status") != "failed"
+    ]
     completed_ids = {record.get("commit_id") for record in records}
     provenance_index = (
         load_provenance_index(args.line_provenance)
@@ -259,7 +264,9 @@ def attribute_jitfine(args):
     for failure in dataset.failures:
         commit_id = str(failure["commit_id"])
         if commit_id not in completed_ids and (not args.commit_id or commit_id == str(args.commit_id)):
-            records.append(_failure(commit_id, failure["reason"]))
+            reason = failure["reason"]
+            status = "skipped" if reason == "missing_manual_features" else "failed"
+            records.append(_failure(commit_id, reason, status=status))
             completed_ids.add(commit_id)
 
     checkpoint_id = run_metadata["fingerprints"]["checkpoint"]
