@@ -227,6 +227,7 @@ Shared by **all** three sub-commands.
 | `-hf_split_path` | str | `None` | no | Sub-directory in the HF repo identifying a specific data split or cross-validation fold (e.g. `linux/linux_3_1`). The last path component becomes the split tag in output filenames. |
 | `-hf_output_repo_id` | str | `None` | no | HF dataset repo to upload results to. Falls back to `-hf_repo_id` when omitted. |
 | `-hf_upload_result` | bool | `False` | no | Push the experiment output folder to the HF dataset repo after all runs complete. |
+| `-hf_upload_model_config_only` | bool | `False` | no | Upload only the run-1 model config for each sampling seed. When enabled, experiment output CSV/log files are not uploaded. |
 
 ---
 
@@ -404,3 +405,10 @@ Example: `lapredict_openssl_openssl_3_1_sampling`
 > **Results upload path:** When `-hf_upload_result True`, results are pushed to
 > `output/<repo_name>/<model>/<sampling_tag>/<slug>` in the HF dataset repo.
 > Override with `-hf_output_folder` if a custom path is needed.
+>
+> To upload only model configs after results have already been uploaded, use
+> `-hf_upload_model_config_only True -resume_from_checkpoint True`. The model
+> configs are uploaded to
+> `model_config/<repo_name>/<model>/<split>/seed_<seed>/`, while output CSV/log
+> files are not uploaded. If both upload flags are `True`, config-only mode
+> takes precedence.
