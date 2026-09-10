@@ -17,7 +17,8 @@ class Sim(BaseWraper):
         if model_path is None:
             self.model = RandomForestClassifier()
         else:
-            self.model = pickle.load(open(f"{model_path}/sim.pkl", "rb"))
+            with open(f"{model_path}/sim.pkl", "rb") as handle:
+                self.model = pickle.load(handle)
             
         self.initialized = True
     
@@ -63,5 +64,5 @@ class Sim(BaseWraper):
     def save(self, save_path, **kwarg):
         os.makedirs(save_path, exist_ok=True)        
         save_path = f"{save_path}/sim.pkl"
-        pickle.dump(self.model, open(save_path, "wb"))
-    
+        with open(save_path, "wb") as handle:
+            pickle.dump(self.model, handle)

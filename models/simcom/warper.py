@@ -18,10 +18,18 @@ class SimCom(BaseWraper):
         
     def initialize(self, dictionary, hyperparameters, model_path=None, **kwarg):
         self.sim.initialize(model_path=model_path)
-        self.com.initialize(dictionary=dictionary, hyperparameters=hyperparameters, model_path=model_path)
+        self.com.initialize(
+            dictionary=dictionary,
+            hyperparameters=hyperparameters,
+            model_path=model_path,
+            **kwarg,
+        )
         self.resumed_from_checkpoint = (
             model_path is not None
-            and os.path.exists(os.path.join(model_path, "simcom_checkpoint_last.pth"))
+            and (
+                os.path.isfile(model_path)
+                or os.path.exists(os.path.join(model_path, "simcom_checkpoint_last.pth"))
+            )
         )
         self.initialized = True
         

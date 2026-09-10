@@ -6,6 +6,9 @@ from datetime import datetime
 from .training import training
 from .evaluating import evaluating
 from .experiment import run_experiment
+from .attribution.runner import attribute
+from .attribution.source_provenance import prepare_lines
+from .ground_truth_pipeline import prepare_ground_truth_hunks, rank_ground_truth
 from .models.init_model import models
 
 __version__ = "0.2.01"
@@ -30,6 +33,13 @@ def float_0_1(value):
 
     if parsed < 0.0 or parsed > 1.0:
         raise argparse.ArgumentTypeError("Expected a float in range [0, 1]")
+    return parsed
+
+
+def float_gt_0_1(value):
+    parsed = float_0_1(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("Expected a float in range (0, 1]")
     return parsed
 
 
@@ -119,6 +129,143 @@ def main(args=None):
         help="Threshold search range for calibration: START END STEPS (example: -calibration_range 0 1 10001)",
     )
 
+    attribution_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    attribution_parser.set_defaults(func=attribute)
+    attribution_parser.add_argument("-model", choices=["jitfine", "deepjit", "simcom"], default="jitfine")
+    attribution_parser.add_argument("-device", default="cpu", help="Eg: cpu, cuda, cuda:1")
+    attribution_parser.add_argument("-threshold", type=float_0_1, default=0.5)
+    attribution_parser.add_argument("-model_path", required=True, help="Checkpoint file or directory")
+    attribution_parser.add_argument(
+        "-test_set",
+        required=True,
+        help="JITFine/SimCom pair or one DeepJIT merge JSONL file",
+    )
+    attribution_parser.add_argument("-hyperparameters", required=True)
+    attribution_parser.add_argument("-dictionary", default=None, help="Required for DeepJIT and SimCom")
+    attribution_parser.add_argument(
+        "-line_provenance", default=None,
+        help="Optional line_provenance.jsonl for verified changed-line ranking",
+    )
+    attribution_parser.add_argument(
+        "-line_aggregation", choices=["sum", "mean", "max"], default="sum",
+    )
+    attribution_parser.add_argument(
+        "-hunk_chunk_size", "-simcom_chunk_size", dest="hunk_chunk_size",
+        type=int_gte_1, default=10,
+        help=("Maximum changed source lines per Git-hunk chunk for DeepJIT/SimCom; "
+              "-simcom_chunk_size is retained as a deprecated alias"),
+    )
+    attribution_parser.add_argument("-output_dir", required=True)
+    attribution_parser.add_argument(
+        "-attention_strategy",
+        choices=["last_layer_cls_mean", "all_layers_cls_mean", "attention_rollout"],
+        default="last_layer_cls_mean",
+    )
+    attribution_parser.add_argument("-top_k", type=int_gte_1, default=None)
+    attribution_parser.add_argument(
+        "-target_class", type=int, choices=[0, 1], default=1,
+        help="Class logit targeted by Grad-CAM; ignored by JITFine",
+    )
+    selection_group = attribution_parser.add_mutually_exclusive_group()
+    selection_group.add_argument("-commit_id", default=None)
+    selection_group.add_argument("-only_predicted_vulnerable", action="store_true")
+    selection_group.add_argument("-all_commits", action="store_true")
+    output_group = attribution_parser.add_mutually_exclusive_group()
+    output_group.add_argument("-overwrite", action="store_true")
+    output_group.add_argument("-resume", action="store_true")
+
+    prepare_lines_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    prepare_lines_parser.set_defaults(func=prepare_lines)
+    prepare_selection = prepare_lines_parser.add_mutually_exclusive_group(required=True)
+    prepare_selection.add_argument("-commit_id", default=None, help="One commit SHA or GitHub commit URL")
+    prepare_selection.add_argument(
+        "-commit_urls", default=None,
+        help="Text/JSONL file containing commit URLs or SHAs",
+    )
+    prepare_lines_parser.add_argument("-output_dir", required=True)
+
+    prepare_ground_truth_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    prepare_ground_truth_parser.set_defaults(func=prepare_ground_truth_hunks)
+    prepare_ground_truth_parser.add_argument(
+        "-ground_truth", required=True, help="XLSX ground-truth workbook",
+    )
+    prepare_ground_truth_parser.add_argument("-sheet", default="Linux", help="Workbook sheet name")
+    prepare_ground_truth_parser.add_argument("-output_dir", required=True)
+
+    rank_ground_truth_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
+    rank_ground_truth_parser.set_defaults(func=rank_ground_truth)
+    rank_ground_truth_parser.add_argument(
+        "-prepared_dir", default=None,
+        help="Local prepared ground-truth directory (omit when using -hf_ground_truth_path)",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-model", choices=["jitfine", "deepjit", "simcom"], required=True,
+    )
+    rank_ground_truth_parser.add_argument("-device", default="cpu", help="Eg: cpu, cuda, cuda:1")
+    rank_ground_truth_parser.add_argument(
+        "-model_path", default=None,
+        help="Local checkpoint file/directory (omit when using -hf_checkpoint_path)",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_ground_truth_path", default=None,
+        help=("Ground-truth directory inside -hf_repo_id; defaults to "
+              "dataset/ground_truth_hunks/<repo_name>"),
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_checkpoint_path", default=None,
+        help="Checkpoint file/directory inside the Hugging Face dataset repository",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_dictionary_path", default=None,
+        help=("CNN dictionary inside the Hugging Face dataset repository; defaults to "
+              "dataset/<repo_name>/dict_<repo_name>.jsonl"),
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hf_features_path", default=None,
+        help=("JITFine Kamei-feature JSONL inside the Hugging Face dataset repository; "
+              "when omitted, the repository test feature file is auto-detected"),
+    )
+    rank_ground_truth_parser.add_argument("-hyperparameters", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-dictionary", default=None, help="Required for DeepJIT and SimCom",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-features", default=None,
+        help="Local manual feature JSONL required for JITFine local runs",
+    )
+    rank_ground_truth_parser.add_argument("-output_dir", required=True)
+    rank_ground_truth_parser.add_argument(
+        "-hf_output_folder", default=None,
+        help=("Custom remote output directory inside the HF dataset repository. "
+              "When omitted, uploads use line_ranking/<repo>/<model>/<config>/<seed>."),
+    )
+    rank_ground_truth_parser.add_argument("-threshold", type=float_0_1, default=0.5)
+    rank_ground_truth_parser.add_argument("-target_class", type=int, choices=[0, 1], default=1)
+    rank_ground_truth_parser.add_argument(
+        "-line_aggregation", choices=["sum", "mean", "max"], default="sum",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-hunk_chunk_size", type=int_gte_1, default=10,
+        help="Maximum changed source lines per attribution chunk",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-attention_strategy",
+        choices=["last_layer_cls_mean", "all_layers_cls_mean", "attention_rollout"],
+        default="last_layer_cls_mean",
+        help="JITFine attention strategy; ignored by CNN models",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-metric_top_k", nargs="+", type=int_gte_1, default=[1, 3, 5, 10],
+        help="K values for absolute hit rate, Recall@K, and NDCG@K",
+    )
+    rank_ground_truth_parser.add_argument(
+        "-effort_fraction", type=float_gt_0_1, default=0.2,
+        help="LOC/recall fraction for effort-aware metrics (default: 0.2)",
+    )
+    rank_ground_truth_output = rank_ground_truth_parser.add_mutually_exclusive_group()
+    rank_ground_truth_output.add_argument("-overwrite", action="store_true")
+    rank_ground_truth_output.add_argument("-resume", action="store_true")
+
     experiment_parser = argparse.ArgumentParser(parents=[common_parser], add_help=False)
     experiment_parser.set_defaults(func=run_experiment)
     experiment_parser.add_argument("-model", type=str, default=None, choices=models, help="List of models")
@@ -180,6 +327,23 @@ def main(args=None):
     subparsers.add_parser('training', parents=[training_parser], help='Training Function')
     subparsers.add_parser('evaluating', parents=[evaluating_parser], help='Evaluating Function')
     subparsers.add_parser('experiment', parents=[experiment_parser], help='Run full experiment loop: training -> validation calibration -> test')
+    subparsers.add_parser(
+        'attribute',
+        parents=[attribution_parser],
+        help='Attribute JITFine tokens or DeepJIT/SimCom code-change rows',
+    )
+    subparsers.add_parser(
+        'prepare-lines', parents=[prepare_lines_parser],
+        help='Prepare provenance-rich merge/patch inputs from Git commits',
+    )
+    subparsers.add_parser(
+        'prepare-ground-truth-hunks', parents=[prepare_ground_truth_parser],
+        help='Create reusable ground-truth hunks from an XLSX sheet and local Git clone',
+    )
+    subparsers.add_parser(
+        'rank-ground-truth', parents=[rank_ground_truth_parser],
+        help='Rank prepared ground-truth hunks with JITFine, DeepJIT, or SimCom',
+    )
 
     options = parser.parse_args(args)
 
@@ -204,7 +368,10 @@ def main(args=None):
         parser.print_help()
         exit(1)
     
-    if options.__dict__.get('command') in ['training', 'evaluating', 'experiment']:
+    if options.__dict__.get('command') in [
+        'training', 'evaluating', 'experiment', 'attribute', 'prepare-lines',
+        'prepare-ground-truth-hunks', 'rank-ground-truth',
+    ]:
         print(f"Set seed: {options.seed}")
         seed_everything(options.seed)
         

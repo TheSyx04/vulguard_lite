@@ -45,7 +45,7 @@ class Com(BaseWraper):
     def set_device(self, device):
         self.device = device
     
-    def initialize(self, dictionary, hyperparameters, model_path=None, **kwarg):
+    def initialize(self, dictionary, hyperparameters, model_path=None, inference_only=False, **kwarg):
         # Load dictionary
         dictionary = open_jsonl(dictionary)
         self.message_dictionary, self.code_dictionary = dictionary[0], dictionary[1]
@@ -64,18 +64,22 @@ class Com(BaseWraper):
             
         else:        
             self.model = DeepJITModel(self.hyperparameters).to(device=self.device)
-            self.optimizer = torch.optim.Adam(self.get_parameters())
+            if not inference_only:
+                self.optimizer = torch.optim.Adam(self.get_parameters())
             
-            checkpoint_file = os.path.join(model_path, "simcom_checkpoint_last.pth")
-            if not os.path.exists(checkpoint_file):
-                checkpoint_file = os.path.join(model_path, "com.pth")
+            checkpoint_file = model_path
+            if not os.path.isfile(checkpoint_file):
+                checkpoint_file = os.path.join(model_path, "simcom_checkpoint_last.pth")
+                if not os.path.exists(checkpoint_file):
+                    checkpoint_file = os.path.join(model_path, "com.pth")
             checkpoint = torch.load(checkpoint_file, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.start_epoch = checkpoint['epoch'] + 1
-            self.total_loss = checkpoint['loss']
-            self.best_valid_score = checkpoint.get("best_valid_score", 0)
-            self.early_stop_count = checkpoint.get("early_stop_count", 5)
+            if not inference_only:
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.start_epoch = checkpoint['epoch'] + 1
+                self.total_loss = checkpoint['loss']
+                self.best_valid_score = checkpoint.get("best_valid_score", 0)
+                self.early_stop_count = checkpoint.get("early_stop_count", 5)
             print(f"Loaded checkpoint from: {checkpoint_file}")
 
         # Set initialized to True

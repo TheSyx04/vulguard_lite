@@ -14,12 +14,14 @@ calibration on commit-level vulnerability classifiers.
    - [Train Only](#2-train-only)
    - [Evaluate Only](#3-evaluate-only)
 3. [Sub-commands](#sub-commands)
+   - [Token Attention Attribution](#4-token-attention-attribution)
 4. [Argument Reference](#argument-reference)
    - [Global Flags](#global-flags)
    - [Common Arguments](#common-arguments)
    - [experiment Arguments](#experiment-arguments)
    - [training Arguments](#training-arguments)
    - [evaluating Arguments](#evaluating-arguments)
+   - [attribute Arguments](#attribute-arguments)
 5. [Supported Models](#supported-models)
 6. [Dataset Format](#dataset-format)
 7. [Output Layout](#output-layout)
@@ -56,6 +58,10 @@ python -m vulguard_lite --help
 ---
 
 ## How to Run
+
+For the two-stage workflow that first creates reusable ground-truth hunks from
+Excel/Git and then optionally ranks them with JITFine, DeepJIT, or SimCom, see
+[GROUND_TRUTH_HUNK_PIPELINE.md](GROUND_TRUTH_HUNK_PIPELINE.md).
 
 All commands follow this pattern:
 
@@ -172,15 +178,94 @@ python -m vulguard_lite evaluating \
 **With threshold calibration:**
 
 ```bash
-python -m vulguard_lite evaluating \
-  -repo_name   linux \
-  -repo_language C \
-  -model       tlel \
-  -test_set    /data/val_Kamei_features_linux.jsonl \
-  -calibrated  True \
-  -budget      0.2 \
+python -m vulguard_lite evaluating \ `
+  -repo_name   linux \ `
+  -repo_language C \ `
+  -model       tlel \ `
+  -test_set    /data/val_Kamei_features_linux.jsonl \ `
+  -calibrated  True \ `
+  -budget      0.2 \ `
   -calibration_range 0 1 10001
 ```
+
+### 4. Model Attribution
+
+The `attribute` sub-command ranks JITFine token occurrences from the added and
+removed regions of the existing test input using CLS attention. It preprocesses
+the complete feature file before selecting a commit so the current feature
+scaling context is preserved.
+
+```bash
+python -m vulguard_lite attribute \
+  -repo_language C \
+  -model jitfine \
+  -device cuda \
+  -model_path ./models/best_epoch \
+  -hyperparameters ./vulguard_lite/models/jitfine/hyperparameters.json \
+  -test_set /data/test_tlel_linux.jsonl,/data/test_deepjit_linux.jsonl \
+  -output_dir ./results/jitfine_token_attention \
+  -attention_strategy last_layer_cls_mean \
+  -all_commits
+```
+
+Use `-commit_id <id>` to export one commit or
+`-only_predicted_vulnerable` to filter by the commit-level prediction. Existing
+results require either `-resume` or `-overwrite`.
+
+The output is an attention diagnostic, not a class-specific explanation or a
+claim that a token or source line is vulnerable. Source-line aggregation is
+deferred until provenance-rich diff data is available.
+
+DeepJIT and the Com component of SimCom also support hierarchical Grad-CAM over
+the newline-separated code-change rows consumed by their existing CNN input:
+
+```bash
+python -m vulguard_lite attribute \ `
+  -repo_language C \ `
+  -model deepjit \ `
+  -device cuda \ `
+  -model_path ./models/best_epoch \ `
+  -hyperparameters ./vulguard_lite/models/deepjit/hyperparameters.json \ `
+  -dictionary ./models/dictionary.jsonl \ `
+  -test_set /data/test_deepjit_linux.jsonl \ `
+  -output_dir ./results/deepjit_gradcam \ `
+  -target_class 1 \ `
+  -all_commits
+```
+
+For SimCom, use `-model simcom`. Pass `features.jsonl,patch.jsonl` when both
+`sim.pkl` and `com.pth` are available, or one patch JSONL with a standalone Com
+checkpoint for Com-only inference. Grad-CAM is always computed from Com only.
+Full SimCom output records the unchanged Sim score, Com score, their mean,
+component agreement, and whether Com supports the final predicted class. CNN output rows
+are model-input rows rather than verified source lines. Rows omitted by
+`code_line` truncation are reported but never scored.
+
+Attribution is intentionally **observed-only**. The ranking contains only added
+or removed code-token occurrences that survived JITFine's 512-position input
+construction and were actually processed by the transformer. Tokens omitted by
+truncation are outside the attribution scope: they are not ranked and are not
+assigned zero or estimated scores. When token-to-line provenance becomes
+available, only source lines containing at least one observed token will be
+eligible for line ranking; lines that the model did not observe will remain out
+of scope.
+
+Omit `-top_k` to export every observed code-token occurrence. Supplying
+`-top_k N` deliberately limits each commit's exported ranking to its first `N`
+entries.
+
+Implementation details that affect interpretation:
+
+- JITFine constructs `[CLS] message <ADD> added-code <REMOVE> removed-code
+  [SEP]`, keeps at most 510 content tokens, then pads the sequence to 512.
+- The ranking uses CLS-to-token attention from the joint message/code encoder.
+  JITFine's 14 manual commit features affect its final prediction but do not
+  receive token-level attribution.
+- Attribution uses eager attention because PyTorch SDPA does not return the
+  attention probabilities required for ranking.
+- Each selected sample is inferred with attention disabled and enabled; the
+  command fails that sample if enabling attention changes its probability
+  beyond the configured numerical tolerance.
 
 ---
 
@@ -191,6 +276,7 @@ python -m vulguard_lite evaluating \
 | `experiment` | Full pipeline: training → validation calibration → test. Supports multiple runs and budget sweeps. |
 | `training` | Fit a model on the training set and save the best checkpoint. |
 | `evaluating` | Run inference on a test (or val) set, compute metrics, and optionally calibrate the decision threshold. |
+| `attribute` | Attribute JITFine tokens or DeepJIT/SimCom code rows. |
 
 ---
 
@@ -302,6 +388,37 @@ All **common arguments** plus:
 
 ---
 
+### `attribute` Arguments
+
+| Argument | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `-model` | str | `jitfine` | no | `jitfine`, `deepjit`, or `simcom`. |
+| `-model_path` | str | — | **yes** | Checkpoint file or conventional checkpoint directory. |
+| `-test_set` | str | — | **yes** | JITFine/full-SimCom pair, DeepJIT merge JSONL, or Com patch JSONL. |
+| `-hyperparameters` | str | — | **yes** | Model hyperparameters JSON. |
+| `-dictionary` | str | `None` | CNN only | DeepJIT/SimCom token dictionary. |
+| `-output_dir` | str | — | **yes** | Directory for JSONL, CSV, metadata, and summary output. |
+| `-attention_strategy` | str | `last_layer_cls_mean` | no | CLS attention aggregation strategy. |
+| `-top_k` | int | all | no | Limit exported ranked token occurrences per commit. |
+| `-target_class` | 0 or 1 | `1` | no | Grad-CAM target class; ignored by JITFine. |
+| `-commit_id` | str | `None` | no | Attribute one commit after preprocessing the complete test pair. |
+| `-only_predicted_vulnerable` | flag | off | no | Keep only commits whose probability is above the threshold. |
+| `-all_commits` | flag | off | no | Explicitly select every commit; this is also the default selection. |
+| `-resume` | flag | off | no | Resume an output with matching input/config fingerprints. |
+| `-overwrite` | flag | off | no | Replace existing attribution artifacts. |
+
+`rank-ground-truth` also supports HF-native inputs. Pass `-hf_repo_id`,
+`-repo_name`, and `-hf_checkpoint_path` instead of local
+`-prepared_dir`/`-model_path`. `-hf_ground_truth_path` defaults to
+`dataset/ground_truth_hunks/<repo_name>`, and CNN dictionaries default to
+`dataset/<repo_name>/dict_<repo_name>.jsonl`. For JITFine, the complete test
+Kamei-feature file is auto-detected under `dataset/<repo_name>`; use
+`-hf_features_path` to override it. See
+[GROUND_TRUTH_HUNK_PIPELINE.md](GROUND_TRUTH_HUNK_PIPELINE.md) for an OpenSSL
+DeepJIT example using `TheSyx/vulguard_lite`.
+
+---
+
 ## Supported Models
 
 | Model | Type | Needs dictionary | GPU | Primary input |
@@ -331,7 +448,7 @@ All dataset files are in **JSONL** format (one JSON object per line).
 **Merge / code file** (`train_merge_<repo>.jsonl`):
 
 ```json
-{"commit_id": "abc123", "label": 1, "message": "fix buffer overflow", "diff": "..."}
+{"commit_id": "abc123", "label": 1, "messages": "fix buffer overflow", "code_change": "<ADD>... <REMOVE>..."}
 ```
 
 ### File naming on Hugging Face

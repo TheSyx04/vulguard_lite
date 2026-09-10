@@ -414,8 +414,8 @@ def run_experiment(params):
     Pipeline overview (per run)
     ---------------------------
     1. **Training** — calls :func:`training` with the (optionally undersampled)
-       training dataset.  The best model checkpoint is saved to
-       ``<experiment_root>/run_<N>/checkpoints/``.
+       training dataset. Model artifacts are isolated by sampling seed under
+       ``<save_root>/models/<model>_seed_<seed>/``.
     2. **Calibration** (when ``-calibrated True``) — calls :func:`evaluating`
        on the validation set, searches for the optimal decision threshold over
        ``-calibration_range`` at the given ``-budget``, and writes the selected
@@ -537,18 +537,14 @@ def run_experiment(params):
 
             model_name = params.model
             # Sklearn models (lapredict, lr) save via pickle and have no checkpoint concept.
+            seed_model_dir = os.path.join(
+                base_checkpoint_dir or f"{base_save_path}/models",
+                model_seed_name(model_name, seed_label),
+            )
             if model_name not in _SKLEARN_MODELS:
-                seed_model_dir = os.path.join(
-                    base_checkpoint_dir or f"{base_save_path}/models",
-                    model_seed_name(model_name, seed_label),
-                )
                 run_checkpoint_dir = os.path.join(seed_model_dir, "checkpoints")
                 os.makedirs(run_checkpoint_dir, exist_ok=True)
             else:
-                seed_model_dir = os.path.join(
-                    base_checkpoint_dir or f"{base_save_path}/models",
-                    model_seed_name(model_name, seed_label),
-                )
                 run_checkpoint_dir = None
 
             run_test_metric_file = f"{run_dir}/{model_name}_test_metrics.csv"

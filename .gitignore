@@ -1,5 +1,49 @@
+# Python bytecode and caches
 __pycache__/
-*.pyc
-output/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local environment files
 .venv/
+venv/
+.conda/
+.env
+.env.*
+!.env.example
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime output, caches, downloaded data, and local checkpoints
+output/
+results/
+dg_cache/
+.cache/
+checkpoint/
+datasets/
+*.log
+
+# Local helper scripts are not part of the maintained package
 scripts/
+!scripts/
+scripts/*
+!scripts/run_experiments_single_gpu.sh
+!scripts/run_line_ranking_sutd.pbs
+!scripts/submit_line_ranking_sutd.sh
+!scripts/upload_line_ranking_results.py
+!scripts/aggregate_line_ranking_results.py
