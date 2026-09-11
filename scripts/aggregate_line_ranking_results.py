@@ -93,6 +93,26 @@ def natural_key(value):
             for part in re.split(r"(\d+)", str(value))]
 
 
+def parse_experiment_filters(values):
+    """Parse exact ``model/config/seed`` selectors from the CLI."""
+    selected = set()
+    for value in values or []:
+        parts = PurePosixPath(value.strip("/")).parts
+        if len(parts) != 3:
+            raise ValueError(
+                f"invalid experiment selector {value!r}; expected model/config/seed"
+            )
+        model, config, seed = parts
+        if seed.startswith("seed_"):
+            seed = seed[5:]
+        if not model or not config or not seed:
+            raise ValueError(
+                f"invalid experiment selector {value!r}; expected model/config/seed"
+            )
+        selected.add((model, config, seed))
+    return selected
+
+
 def missing_experiments(records, dataset, models):
     """Find holes in the discovered model x config x seed matrix."""
     present = {
@@ -158,6 +178,13 @@ def make_parser():
     parser.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS))
     parser.add_argument("--models", nargs="+", default=list(DEFAULT_MODELS))
     parser.add_argument(
+        "--experiments", nargs="+", default=[], metavar="MODEL/CONFIG/SEED",
+        help=(
+            "Download only these exact experiments, for example "
+            "jitfine/openssl_0_2/seed_2. Intentional matrix holes are ignored."
+        ),
+    )
+    parser.add_argument(
         "--output", type=Path, default=Path("line_ranking_results.xlsx"),
     )
     parser.add_argument(
@@ -180,6 +207,18 @@ def main(argv=None):
         raise SystemExit("--datasets contains duplicates")
     if len(set(args.models)) != len(args.models):
         raise SystemExit("--models contains duplicates")
+    try:
+        selected_experiments = parse_experiment_filters(args.experiments)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    unknown_selected_models = sorted(
+        {model for model, _, _ in selected_experiments} - set(args.models)
+    )
+    if unknown_selected_models:
+        raise SystemExit(
+            "--experiments contains models excluded by --models: "
+            + ", ".join(unknown_selected_models)
+        )
 
     print(f"Listing line-ranking results in {args.hf_repo_id}@{args.revision} ...")
     repo_files = HfApi().list_repo_files(
@@ -190,8 +229,20 @@ def main(argv=None):
     experiments = []
     for remote_path in repo_files:
         parsed = parse_summary_path(remote_path, set(args.datasets), set(args.models))
-        if parsed:
+        if parsed and (
+            not selected_experiments
+            or (parsed[1], parsed[2], str(parsed[3])) in selected_experiments
+        ):
             experiments.append((remote_path, parsed))
+    if selected_experiments:
+        discovered = {
+            (model, config, str(seed))
+            for _, (_, model, config, seed) in experiments
+        }
+        missing_selected = sorted(selected_experiments - discovered, key=natural_key)
+        if missing_selected:
+            formatted = ", ".join("/".join(item) for item in missing_selected)
+            raise SystemExit(f"Requested experiment(s) not found: {formatted}")
     if not experiments:
         raise SystemExit(
             "No line-ranking summary found under "
@@ -233,7 +284,10 @@ def main(argv=None):
         raise SystemExit(f"Failed to download {len(errors)} summary file(s)")
 
     missing_by_dataset = {
-        dataset: missing_experiments(records, dataset, args.models)
+        dataset: (
+            [] if selected_experiments
+            else missing_experiments(records, dataset, args.models)
+        )
         for dataset in args.datasets
     }
     empty_datasets = [

@@ -699,6 +699,53 @@ def _median(values: Iterable[float]) -> Optional[float]:
     return statistics.median(values) if values else None
 
 
+def coverage_aware_line_effort_metrics(
+        ground_truth_entries: Iterable[Dict],
+        effort_fraction: float = 0.2) -> Dict:
+    """Compute micro effort metrics over all eligible ground-truth lines.
+
+    Ranks remain local to their independently ranked group (for example a
+    hunk chunk).  Unranked lines are retained as misses and receive the maximum
+    line-exam penalty.  Dataset-level effort is the uniform within-group list
+    fraction required to recover the requested fraction of all ground-truth
+    lines; it is unreachable when ranking coverage is below that target.
+    """
+    if not 0 < effort_fraction <= 1:
+        raise ValueError("effort_fraction_must_be_in_0_1")
+    entries = list(ground_truth_entries)
+    total_lines = len(entries)
+    rank_fractions = [
+        entry["rank"] / entry["candidate_count"]
+        for entry in entries
+        if entry.get("rank") is not None and entry.get("candidate_count")
+    ]
+    inspected_hits = sum(
+        entry.get("rank") is not None
+        and entry.get("candidate_count")
+        and entry["rank"] <= max(
+            1, math.ceil(effort_fraction * entry["candidate_count"])
+        )
+        for entry in entries
+    )
+    required_hits = max(1, math.ceil(effort_fraction * total_lines)) if total_lines else 0
+    sorted_fractions = sorted(rank_fractions)
+    return {
+        f"recall_at_{effort_fraction:g}_loc": (
+            inspected_hits / total_lines if total_lines else None
+        ),
+        f"effort_at_{effort_fraction:g}_recall": (
+            sorted_fractions[required_hits - 1]
+            if required_hits and len(sorted_fractions) >= required_hits else None
+        ),
+        "mean_line_exam_unranked_as_one": _mean(
+            entry["rank"] / entry["candidate_count"]
+            if entry.get("rank") is not None and entry.get("candidate_count")
+            else 1.0
+            for entry in entries
+        ),
+    }
+
+
 def _average_precision(relevant_ranks: List[int], relevant_count: int) -> float:
     if relevant_count <= 0:
         return 0.0
@@ -934,6 +981,9 @@ def evaluate_ranking_metrics(
             if entry["rank_percentile"] is not None
         ),
     }
+    absolute.update(coverage_aware_line_effort_metrics(
+        ground_truth_entries, effort_fraction,
+    ))
     for cutoff in top_k:
         hit_count = sum(
             entry["rank"] is not None and entry["rank"] <= cutoff
@@ -1002,6 +1052,103 @@ def evaluate_ranking_metrics(
         },
         "ground_truth_line_results": ground_truth_entries,
     }, unit_metrics
+
+
+def rerank_jitfine_hunk_chunks(
+        ranked_hunks: Iterable[Dict], chunk_size: int = 10,
+        top_k: Iterable[int] = (1, 3, 5, 10),
+        effort_fraction: float = 0.2) -> Tuple[List[Dict], Dict, List[Dict]]:
+    """Re-rank existing JITFine line scores inside Git-hunk chunks.
+
+    This is evaluation-only post-processing: JITFine's full-commit inference and
+    raw line scores are retained.  No missing/truncated line receives a score.
+    Chunks follow the canonical changed-line order stored in each ground-truth
+    hunk and never contain more than ``chunk_size`` lines.
+    """
+    if chunk_size < 1:
+        raise ValueError("chunk_size_must_be_positive")
+
+    output = []
+    next_chunk_by_commit = defaultdict(int)
+    for source_hunk in ranked_hunks:
+        hunk = json.loads(json.dumps(source_hunk))
+        commit_id = str(hunk.get("commit_id", "")).lower()
+        canonical_lines = hunk.get("lines", [])
+        part_count = max(1, math.ceil(len(canonical_lines) / chunk_size))
+        first_chunk_id = next_chunk_by_commit[commit_id]
+        next_chunk_by_commit[commit_id] += part_count
+
+        chunk_by_line_id = {}
+        chunk_by_line_number = {}
+        for position, line in enumerate(canonical_lines):
+            part = position // chunk_size
+            chunk_id = first_chunk_id + part
+            if line.get("line_id") is not None:
+                chunk_by_line_id[int(line["line_id"])] = (chunk_id, part)
+            if line.get("new_line_no") is not None:
+                chunk_by_line_number[int(line["new_line_no"])] = (chunk_id, part)
+
+        wrapper = hunk.get("model_ranking", {})
+        ranking = wrapper.get("ranking")
+        if ranking:
+            chunk_lines = defaultdict(list)
+            for line in ranking.get("lines", []):
+                location = None
+                if line.get("line_id") is not None:
+                    location = chunk_by_line_id.get(int(line["line_id"]))
+                if location is None and line.get("new_line_no") is not None:
+                    location = chunk_by_line_number.get(int(line["new_line_no"]))
+                if location is None:
+                    continue
+                chunk_lines[location].append(line)
+
+            reranked_lines = []
+            for (chunk_id, part), lines in sorted(chunk_lines.items()):
+                lines.sort(key=lambda line: (
+                    -float(line["raw_score"]),
+                    int(line.get("line_id") or 0),
+                ))
+                for rank_in_chunk, line in enumerate(lines, 1):
+                    reranked_lines.append({
+                        **line,
+                        "commit_rank": line.get("rank"),
+                        "rank_in_chunk": rank_in_chunk,
+                        "chunk_id": chunk_id,
+                        "hunk_part": part,
+                        "hunk_part_count": part_count,
+                        "ranking_score_source": "jitfine_full_commit_attention",
+                    })
+            ranking["lines"] = reranked_lines
+            ranking["ranking_scope"] = "posthoc_hunk_chunk"
+            ranking["chunk_size"] = chunk_size
+            wrapper["model"] = "jitfine_hunk_chunk"
+            wrapper["score_source_model"] = "jitfine"
+            wrapper["inference_reused"] = True
+        hunk["model_ranking"] = wrapper
+        output.append(hunk)
+
+    ranking_metrics, unit_metrics = evaluate_ranking_metrics(
+        output,
+        "jitfine_hunk_chunk",
+        top_k=top_k,
+        effort_fraction=effort_fraction,
+    )
+    summary = {
+        "stage": "rerank-jitfine-hunk-chunks",
+        "model": "jitfine_hunk_chunk",
+        "score_source_model": "jitfine",
+        "score_source_scope": "full_commit_attention",
+        "ranking_scope": "posthoc_hunk_chunk",
+        "inference_reused": True,
+        "chunk_size": chunk_size,
+        "ground_truth_hunks": len(output),
+        "ranked_ground_truth_hunks": sum(
+            hunk.get("model_ranking", {}).get("status") == "ranked"
+            for hunk in output
+        ),
+        "ranking_metrics": ranking_metrics,
+    }
+    return output, summary, unit_metrics
 
 
 def _line_ranking_hf_output_path(repo_name, model, checkpoint_path, custom_output=None):

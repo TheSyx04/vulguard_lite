@@ -290,6 +290,47 @@ The summary prefixes aggregated effort-aware metrics with `mean_`, for example
 `mean_recall_at_0.2_loc` and `mean_effort_at_0.2_recall`. It also records
 `evaluated_unit_count`, which should always accompany native-unit results.
 
+#### Post-hoc JITFine hunk-chunk evaluation
+
+JITFine natively ranks observed changed lines across a complete commit, while
+DeepJIT and SimCom rank inside Git-hunk chunks. Existing JITFine artifacts can
+be evaluated on the same maximum-10-line chunk scope without running inference
+again. The post-processor retains each stored full-commit attention
+`raw_score`, reconstructs chunks from canonical hunk line order, and assigns a
+new `rank_in_chunk`:
+
+```bash
+python scripts/rerank_jitfine_hunk_chunks.py \
+  --hf-repo-id TheSyx/vulguard_lite \
+  --datasets linux openssl \
+  --chunk-size 10 \
+  --output-dir jitfine_hunk_chunk_results \
+  --report jitfine_hunk_chunk_results.csv
+```
+
+The separate output filenames end in `_hunk_chunk`; native commit-level files
+are never overwritten. Summaries record `inference_reused: true`,
+`score_source_scope: full_commit_attention`, and
+`ranking_scope: posthoc_hunk_chunk`. Coverage does not increase: skipped,
+truncated, or otherwise unscored JITFine lines remain unranked.
+
+For publication-oriented output, build separate concise reports:
+
+```bash
+python scripts/build_line_ranking_reports.py \
+  --output-dir line_ranking_reports
+```
+
+`line_metrics/<dataset>.csv` is the primary report. Its effort-aware fields are
+micro metrics over all eligible ground-truth lines: unranked lines remain
+misses, contribute zero to `line_mrr`, and receive a `mean_line_exam` penalty
+of `1.0`. `chunk_metrics/<dataset>.csv` contains secondary macro diagnostics
+over hunk chunks. Its `hit_K` columns are coverage-aware binary success rates
+over every chunk containing ground truth, including entirely unranked chunks as
+misses; the other chunk macro metrics remain conditional on `ranked_chunks`.
+CSV column names stay short because scope is encoded by the parent directory
+instead of a flattened JSON prefix.
+
 Customize the cutoffs and effort fraction with:
 
 ```bash
