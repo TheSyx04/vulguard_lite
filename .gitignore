@@ -49,3 +49,5 @@ scripts/*
 !scripts/aggregate_line_ranking_results.py
 !scripts/rerank_jitfine_hunk_chunks.py
 !scripts/build_line_ranking_reports.py
+
+!scripts/extract_line_vul_scores.py

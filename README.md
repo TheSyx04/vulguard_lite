@@ -529,3 +529,58 @@ Example: `lapredict_openssl_openssl_3_1_sampling`
 > `model_config/<repo_name>/<model>/<split>/seed_<seed>/`, while output CSV/log
 > files are not uploaded. If both upload flags are `True`, config-only mode
 > takes precedence.
+
+### Extract VIC/VFC classification scores from Data_line_vul.xlsx
+
+Install the lightweight script dependencies if needed:
+
+```bash
+python3 -m pip install openpyxl huggingface_hub
+```
+
+Extract all matching test-score files from `TheSyx/vulguard_lite` (all models,
+configs, seeds, runs and budgets for Linux and OpenSSL):
+
+```bash
+python3 scripts/extract_line_vul_scores.py --output line_vul_scores.csv
+```
+
+Limit the extraction to selected experiments:
+
+```bash
+python3 scripts/extract_line_vul_scores.py \
+  --datasets openssl --models deepjit --configs openssl_0_1 \
+  --seeds 1 --runs 1 --budgets 0.05 \
+  --output openssl_deepjit_scores.csv
+```
+
+Alternatively, pass `--files` followed by one or more exact repository paths,
+e.g. `output/openssl/deepjit/openssl_0_1/seed_1_run_1/deepjit_budget_0p05_test_scores.csv`.
+Use `--local-root /path/to/downloaded/repo` to read the same `output/` layout
+offline. `--input`, `--repo-id`, `--revision`, and `--cache-dir` override defaults.
+The script also accepts `output/<dataset>/<model>/sampling/<config>/...`
+and `no_sampling` directories, including LR, LApredict, and TLEL results.
+`config` keeps the exact directory name, so filtering these experiments uses
+e.g. `--configs lr_linux_linux_0_0_sampling`. Runs named `run_1` without a
+seed prefix are exported with `seed=default`.
+Remote downloads are pinned to the resolved repository revision and use the
+Hugging Face cache (and existing authentication / `HF_TOKEN`, when configured).
+
+The CSV contains one row per workbook occurrence per selected experiment for
+that occurrence's dataset. `Vul_commit` becomes `VIC`; `Patch_commit` becomes
+`VFC`. The workbook contains 80 occurrences (40 VIC, 40 VFC), representing 78
+unique dataset/commit pairs: Linux has 56 occurrences and OpenSSL has 24.
+Repeated entries are preserved with `dataset` and `excel_row` provenance.
+
+Each row includes `dataset`, `excel_row`, `commit_prefix`, `vul_lines`, `model`,
+`config`, `seed`, `run`, `budget`, `label`, `prediction`, and `probability`.
+Scores and predictions are copied
+unchanged from the source CSV; no threshold or label is inferred from VIC/VFC.
+Abbreviated SHAs must identify exactly one score row. Unmatched occurrences
+remain in the output with blank score fields, as do ambiguous matches.
+Match-status counts are printed to stderr, rather than included in the CSV.
+Duplicate score commit IDs and malformed files stop the run,
+so failed downloads are not silently treated as missing commits. The final
+output is replaced only after all selected files have been processed successfully.
+If no selected file covers a workbook dataset, the script prints a warning;
+it does not invent experiments for that dataset.
