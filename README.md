@@ -502,6 +502,7 @@ For multi-file models (JITFine, SimCom), all paired files contain **exactly the 
         checkpoints/             <- latest resume checkpoint only
     experiments/<slug>/
       run_1/
+        model_checkpoint/                         <- exact model used by this run
         <model>_<budget>_val_scores.csv
         <model>_<budget>_val_metrics.csv
         <model>_<budget>_val_threshold_calibration.csv

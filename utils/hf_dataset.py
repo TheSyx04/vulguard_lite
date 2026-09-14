@@ -52,7 +52,10 @@ def _list_dataset_files(repo_id, revision="main"):
 
 
 def _download_file(repo_id, revision, remote_path, local_path):
-    if os.path.exists(local_path):
+    force_download = os.getenv("VULGUARD_HF_FORCE_DOWNLOAD", "").strip().lower() in {
+        "1", "true", "yes", "y",
+    }
+    if os.path.exists(local_path) and not force_download:
         return local_path
 
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -61,10 +64,14 @@ def _download_file(repo_id, revision, remote_path, local_path):
     remote_path_quoted = quote(remote_path, safe="/")
     url = f"https://huggingface.co/datasets/{repo_id_quoted}/resolve/{revision_quoted}/{remote_path_quoted}"
 
+    temporary_path = f"{local_path}.{os.getpid()}.tmp"
     try:
-        with urlopen(url) as response, open(local_path, "wb") as output_file:
+        with urlopen(url) as response, open(temporary_path, "wb") as output_file:
             shutil.copyfileobj(response, output_file)
+        os.replace(temporary_path, local_path)
     except (HTTPError, URLError, OSError) as exc:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
         raise HFDatasetError(
             f"Failed to download Hugging Face dataset file {remote_path} from {repo_id}@{revision}: {exc}"
         ) from exc

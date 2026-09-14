@@ -75,7 +75,11 @@ echo "Model / X     : $model / $x"
 echo "Configs       : ${configs[*]}"
 echo "Seeds         : ${SEED_ARRAY[*]}"
 echo "CPU threads   : $CPU_THREADS"
-echo "Mode          : inference-only from verified last_epoch"
+if [[ "$EXECUTION_KIND" == "cpu" ]]; then
+    echo "Mode          : retrain + evaluate + test; checkpoint retained per run"
+else
+    echo "Mode          : inference-only from verified Hugging Face checkpoint"
+fi
 echo "Source root   : $OUTPUT_ROOT"
 echo "Result root   : $RESULT_ROOT"
 
@@ -88,6 +92,7 @@ export PYTHONPATH="$project_parent${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS="$CPU_THREADS"
 export MKL_NUM_THREADS="$CPU_THREADS"
 export NUMEXPR_NUM_THREADS="$CPU_THREADS"
+export VULGUARD_HF_FORCE_DOWNLOAD="1"
 if [[ "$device" == "cpu" ]]; then
     export CUDA_VISIBLE_DEVICES=""
 fi
@@ -95,6 +100,48 @@ fi
 job_id="${PBS_JOBID:-manual}"
 stage_dir="${TMPDIR:-$SERVER_ROOT/tmp}/vulguard_openssl_reinfer/${job_id}_${task_index}"
 mkdir -p "$stage_dir"
+
+if [[ "$EXECUTION_KIND" == "cpu" ]]; then
+    case "${UPLOAD_RESULTS,,}" in
+        true|1|yes) upload_results="True" ;;
+        false|0|no) upload_results="False" ;;
+        *) echo "UPLOAD_RESULTS must be True or False, got: $UPLOAD_RESULTS" >&2; exit 2 ;;
+    esac
+
+    for config in "${configs[@]}"; do
+        save_folder="$RESULT_ROOT/$model/$config"
+        experiment_name="${model}_openssl_${config}_sampling"
+        remote_folder="output/openssl_reinfer/$model/sampling/$experiment_name"
+        mkdir -p "$save_folder"
+        command=(
+            python -m vulguard_lite experiment
+            -repo_name openssl
+            -repo_language C
+            -model "$model"
+            -device cpu
+            -dg_save_folder "$save_folder"
+            -hf_repo_id "$HF_REPO_ID"
+            -hf_revision "$HF_REVISION"
+            -hf_split_path "dataset/openssl/$config"
+            -hf_upload_result "$upload_results"
+            -hf_output_repo_id "$HF_OUTPUT_REPO_ID"
+            -hf_output_folder "$remote_folder"
+            -runs 3
+            -epochs 30
+            -sampling True
+            -sampling_seeds "${SEED_ARRAY[@]}"
+            -budget 0.05 0.075 0.1 0.15 0.2
+            -calibration_range 0 1 10001
+            -resume_from_checkpoint False
+        )
+        printf 'Command:'
+        printf ' %q' "${command[@]}"
+        printf '\n'
+        "${command[@]}"
+    done
+    echo "Completed     : $(date --iso-8601=seconds)"
+    exit 0
+fi
 
 command=(
     python "$REPO_DIR/scripts/reinfer_openssl_latest.py"

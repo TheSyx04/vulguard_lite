@@ -551,9 +551,12 @@ def run_experiment(params):
             if getattr(params, "resume_from_checkpoint", False) and os.path.exists(run_test_metric_file):
                 print(f"Run {global_run_idx} already completed. Skip this run: {run_test_metric_file}")
                 if run_idx == 1:
+                    completed_run_model_dir = os.path.join(run_dir, "model_checkpoint")
                     _upload_model_config(
                         params,
-                        os.path.join(seed_model_dir, "last_epoch"),
+                        completed_run_model_dir
+                        if os.path.isdir(completed_run_model_dir)
+                        else os.path.join(seed_model_dir, "last_epoch"),
                         current_sampling_seed if current_sampling_seed is not None else base_seed,
                     )
                 test_metrics_df = pd.read_csv(run_test_metric_file)
@@ -584,10 +587,16 @@ def run_experiment(params):
                 f"  [1/3] Training time      : {_fmt_duration(train_elapsed)} ({train_elapsed:.2f}s)"
             )
             last_model_dir = training_result["last_model_dir"]
+            # Preserve the exact model used by this run. The seed-scoped
+            # last_epoch directory is overwritten by later runs, so it cannot
+            # serve as per-run provenance or as a safe inference artifact.
+            run_model_dir = os.path.join(run_dir, "model_checkpoint")
+            shutil.copytree(last_model_dir, run_model_dir, dirs_exist_ok=True)
+            print(f"Run-specific model checkpoint saved to: {run_model_dir}")
             if run_idx == 1:
                 _upload_model_config(
                     params,
-                    last_model_dir,
+                    run_model_dir,
                     current_sampling_seed if current_sampling_seed is not None else base_seed,
                 )
 
@@ -614,7 +623,7 @@ def run_experiment(params):
                         # Per-budget thresholds are selected from the same table below.
                         "budget": float(budgets[0]),
                         "runs": 1,
-                        "model_path": last_model_dir,
+                        "model_path": run_model_dir,
                     },
                 )
                 evaluating(val_eval_params)
@@ -720,7 +729,7 @@ def run_experiment(params):
                         "budget": float(budget),
                         "threshold": selected_threshold,
                         "runs": 1,
-                        "model_path": last_model_dir,
+                        "model_path": run_model_dir,
                     },
                 )
                 evaluating(test_eval_params)
