@@ -50,6 +50,8 @@ scripts/*
 !scripts/rerank_jitfine_hunk_chunks.py
 !scripts/build_line_ranking_reports.py
 !scripts/reinfer_openssl_latest.py
-!scripts/reinfer_openssl_latest_sutd.pbs
+!scripts/reinfer_openssl_latest_sutd_worker.sh
+!scripts/reinfer_openssl_latest_gpu_sutd.pbs
+!scripts/reinfer_openssl_latest_cpu_sutd.pbs
 
 !scripts/extract_line_vul_scores.py

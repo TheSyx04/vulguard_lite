@@ -1,20 +1,5 @@
 #!/usr/bin/env bash
-# Refresh the OpenSSL test dataset and run inference only from evaluated
-# last_epoch checkpoints. Submit with:
-#   qsub -v HF_TOKEN scripts/reinfer_openssl_latest_sutd.pbs
-#
-# The default array has one task per (model, X) pair: 6 models x 4 X values.
-# Each task handles Y=1,2,3 and seeds 1..5 sequentially. Up to four tasks use
-# one GPU each; PBS chooses any suitable node in v100q (no fixed host).
-#
-#PBS -N ossl_reinfer
-#PBS -q v100q
-#PBS -l select=1:mem=10GB:ncpus=5:ngpus=1
-#PBS -l walltime=48:00:00
-#PBS -P 20260203
-#PBS -J 0-23%4
-#PBS -j oe
-#PBS -o /scratch/congthanh_le/quan/vulguard_logs/overall/openssl_reinfer_latest.log
+# Shared worker for the CPU and GPU OpenSSL reinference PBS arrays.
 
 set -euo pipefail
 
@@ -28,14 +13,18 @@ CONDA_ENV="${CONDA_ENV:-vulguard_lite}"
 HF_REPO_ID="${HF_REPO_ID:-TheSyx/vulguard_lite}"
 HF_REVISION="${HF_REVISION:-main}"
 HF_OUTPUT_REPO_ID="${HF_OUTPUT_REPO_ID:-$HF_REPO_ID}"
-MODELS="${MODELS:-tlel;lapredict;lr;deepjit;simcom;jitfine}"
 X_VALUES="${X_VALUES:-0;1;2;3}"
 Y_VALUES="${Y_VALUES:-1;2;3}"
 SEEDS="${SEEDS:-1;2;3;4;5}"
 UPLOAD_RESULTS="${UPLOAD_RESULTS:-True}"
+CPU_THREADS="${CPU_THREADS:-1}"
 
+if [[ -z "${MODELS:-}" || -z "${EXECUTION_KIND:-}" ]]; then
+    echo "MODELS and EXECUTION_KIND must be set by a CPU/GPU PBS wrapper." >&2
+    exit 2
+fi
 if [[ -z "${HF_TOKEN:-}" ]]; then
-    echo "HF_TOKEN is required. Submit with: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_sutd.pbs" >&2
+    echo "HF_TOKEN is required; submit the PBS file with qsub -v HF_TOKEN." >&2
     exit 2
 fi
 if [[ ! -d "$REPO_DIR" || ! -f "$REPO_DIR/scripts/reinfer_openssl_latest.py" ]]; then
@@ -63,10 +52,10 @@ x_index=$((task_index % ${#X_ARRAY[@]}))
 model="${MODEL_ARRAY[$model_index]}"
 x="${X_ARRAY[$x_index]}"
 
-case "$model" in
-    tlel|lapredict|lr) device="cpu" ;;
-    deepjit|simcom|jitfine) device="cuda:0" ;;
-    *) echo "Unsupported model: $model" >&2; exit 2 ;;
+case "$EXECUTION_KIND:$model" in
+    cpu:tlel|cpu:lapredict|cpu:lr) device="cpu" ;;
+    gpu:deepjit|gpu:simcom|gpu:jitfine) device="cuda:0" ;;
+    *) echo "Model $model is invalid for the $EXECUTION_KIND array" >&2; exit 2 ;;
 esac
 
 configs=()
@@ -75,17 +64,19 @@ for y in "${Y_ARRAY[@]}"; do
 done
 
 mkdir -p "$LOG_ROOT"
-log_file="$LOG_ROOT/${model}_x${x}.log"
+log_file="$LOG_ROOT/${EXECUTION_KIND}_${model}_x${x}.log"
 exec > >(tee -a "$log_file") 2>&1
 
 echo "Started       : $(date --iso-8601=seconds)"
 echo "Host          : $(hostname)"
+echo "Execution     : $EXECUTION_KIND"
 echo "Array task    : $task_index / $((task_count - 1))"
 echo "Model / X     : $model / $x"
 echo "Configs       : ${configs[*]}"
 echo "Seeds         : ${SEED_ARRAY[*]}"
+echo "CPU threads   : $CPU_THREADS"
 echo "Mode          : inference-only from verified last_epoch"
-echo "Output root   : $OUTPUT_ROOT"
+echo "Source root   : $OUTPUT_ROOT"
 echo "Result root   : $RESULT_ROOT"
 
 # shellcheck disable=SC1090
@@ -94,9 +85,9 @@ conda activate "$CONDA_ENV"
 
 project_parent="$(dirname "$REPO_DIR")"
 export PYTHONPATH="$project_parent${PYTHONPATH:+:$PYTHONPATH}"
-export OMP_NUM_THREADS=5
-export MKL_NUM_THREADS=5
-export NUMEXPR_NUM_THREADS=5
+export OMP_NUM_THREADS="$CPU_THREADS"
+export MKL_NUM_THREADS="$CPU_THREADS"
+export NUMEXPR_NUM_THREADS="$CPU_THREADS"
 if [[ "$device" == "cpu" ]]; then
     export CUDA_VISIBLE_DEVICES=""
 fi
