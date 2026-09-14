@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Refresh the OpenSSL test set and re-run inference from completed checkpoints.
 
-This intentionally does not call ``training()``.  For each sampling seed it
-loads the current ``last_epoch`` model once, then reapplies the thresholds
-already selected during the completed validation/evaluation runs.
+This intentionally does not call ``training()``. For each sampling seed it
+prefers the newest completed-run checkpoint on Hugging Face, falls back to the
+canonical ``model_config`` artifact, and only then checks local ``last_epoch``.
+It reapplies thresholds already selected by completed evaluation runs.
 """
 
 from __future__ import annotations
@@ -98,7 +99,9 @@ def jsonl_commit_ids(path: Path) -> list[str]:
     return ids
 
 
-def download_fresh_test_dataset(args: argparse.Namespace) -> tuple[dict[str, Path], str]:
+def download_fresh_test_dataset(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Path], str, list[str]]:
     """Force-download direct children of dataset/openssl needed for inference."""
     api = HfApi(token=os.getenv("HF_TOKEN"))
     info = api.dataset_info(args.hf_repo_id, revision=args.hf_revision)
@@ -135,7 +138,7 @@ def download_fresh_test_dataset(args: argparse.Namespace) -> tuple[dict[str, Pat
         )
         downloaded[Path(remote_path).name] = local
         print(f"Downloaded fresh: {remote_path} ({local.stat().st_size} bytes)")
-    return downloaded, info.sha
+    return downloaded, info.sha, repo_files
 
 
 def pick(downloaded: dict[str, Path], preferences: tuple[str, ...]) -> Path:
@@ -215,10 +218,8 @@ def find_experiment_root(save_folder: Path, model_name: str, config: str) -> Pat
     return root
 
 
-def find_save_folder(
-    output_root: Path, model_name: str, config: str, seeds: list[int]
-) -> Path:
-    """Select the newest complete local output tree, including checkpoint_fix trees."""
+def find_save_folders(output_root: Path, model_name: str, config: str) -> list[Path]:
+    """Find output trees containing this experiment, including checkpoint_fix trees."""
     canonical = output_root / "openssl" / model_name / config
     candidates = [canonical] if canonical.is_dir() else []
     for path in output_root.rglob(config):
@@ -230,43 +231,22 @@ def find_save_folder(
         ):
             candidates.append(path)
 
-    usable: list[tuple[float, Path]] = []
     expected_experiment = f"{model_name}_openssl_{config}_sampling"
-    for path in candidates:
-        experiment = path / "dg_cache" / "save" / "openssl" / "experiments" / expected_experiment
-        if not experiment.is_dir():
-            continue
-        seed_dirs = [
-            path
-            / "dg_cache"
-            / "save"
-            / "openssl"
-            / "models"
-            / f"{model_name}_seed_{seed}"
-            / "last_epoch"
-            for seed in seeds
-        ]
-        if not all(directory.is_dir() for directory in seed_dirs):
-            continue
-        try:
-            checkpoint_candidates = [
-                file
-                for directory in seed_dirs
-                for file in checkpoint_files(directory, model_name)
-            ]
-        except FileNotFoundError:
-            continue
-        latest_mtime = max(file.stat().st_mtime for file in checkpoint_candidates)
-        usable.append((latest_mtime, path))
+    usable = [
+        path
+        for path in candidates
+        if (
+            path / "dg_cache" / "save" / "openssl" / "experiments" / expected_experiment
+        ).is_dir()
+    ]
     if not usable:
+        inspected = ", ".join(str(path) for path in candidates) or "no matching directories"
         raise FileNotFoundError(
-            f"No complete output tree found for openssl/{model_name}/{config} under {output_root}"
+            f"No experiment tree found for openssl/{model_name}/{config} under {output_root}; "
+            f"inspected: {inspected}"
         )
-    usable.sort(key=lambda item: (item[0], str(item[1])))
-    selected = usable[-1][1]
-    if len(usable) > 1:
-        print(f"Found {len(usable)} output trees; selected newest: {selected}")
-    return selected
+    print(f"Found {len(usable)} experiment tree(s) for {model_name}/{config}")
+    return sorted(usable)
 
 
 def checkpoint_files(checkpoint_dir: Path, model_name: str) -> list[Path]:
@@ -300,6 +280,201 @@ def verify_checkpoint_was_evaluated(checkpoints: list[Path], run_dirs: list[Path
             "Latest checkpoint is newer than every completed evaluation artifact; "
             "refusing to infer because it cannot be verified as evaluated"
         )
+
+
+def select_seed_source(
+    save_folders: list[Path], model_name: str, config: str, seed: int
+) -> tuple[Path, Path, Path, list[Path], list[Path]]:
+    """Select the newest evaluated checkpoint independently for one seed."""
+    usable = []
+    rejected = []
+    for save_folder in save_folders:
+        experiment_root = find_experiment_root(save_folder, model_name, config)
+        checkpoint_dir = (
+            save_folder
+            / "dg_cache"
+            / "save"
+            / "openssl"
+            / "models"
+            / f"{model_name}_seed_{seed}"
+            / "last_epoch"
+        )
+        try:
+            checkpoints = checkpoint_files(checkpoint_dir, model_name)
+            run_dirs = completed_run_dirs(experiment_root, model_name, seed)
+            verify_checkpoint_was_evaluated(checkpoints, run_dirs, model_name)
+        except (FileNotFoundError, RuntimeError) as exc:
+            rejected.append(f"{save_folder}: {exc}")
+            continue
+        checkpoint_mtime = max(path.stat().st_mtime for path in checkpoints)
+        usable.append(
+            (checkpoint_mtime, save_folder, experiment_root, checkpoint_dir, checkpoints, run_dirs)
+        )
+
+    if not usable:
+        details = " | ".join(rejected) or "no candidate output trees"
+        raise FileNotFoundError(
+            f"No evaluated latest checkpoint for {model_name}/{config}/seed_{seed}. {details}"
+        )
+    usable.sort(key=lambda item: (item[0], str(item[1])))
+    _, save_folder, experiment_root, checkpoint_dir, checkpoints, run_dirs = usable[-1]
+    print(f"Selected seed {seed} source: {save_folder}")
+    return save_folder, experiment_root, checkpoint_dir, checkpoints, run_dirs
+
+
+def download_hf_files(
+    args: argparse.Namespace, remote_paths: list[str]
+) -> list[Path]:
+    local_paths = []
+    for remote_path in remote_paths:
+        local_paths.append(
+            Path(
+                hf_hub_download(
+                    repo_id=args.hf_repo_id,
+                    repo_type="dataset",
+                    revision=args.hf_revision,
+                    filename=remote_path,
+                    local_dir=args.stage_dir,
+                    token=os.getenv("HF_TOKEN"),
+                )
+            )
+        )
+    return local_paths
+
+
+def hf_result_prefix(
+    repo_files: list[str], model_name: str, config: str, seed: int
+) -> str:
+    experiment_name = f"{model_name}_openssl_{config}_sampling"
+    prefixes = (
+        f"output/openssl/{model_name}/{config}",
+        f"output/openssl/{model_name}/sampling/{experiment_name}",
+    )
+    for prefix in prefixes:
+        marker = f"{prefix}/seed_{seed}_run_"
+        if any(path.startswith(marker) for path in repo_files):
+            return prefix
+    raise FileNotFoundError(
+        f"No completed HF output found for {model_name}/{config}/seed_{seed}"
+    )
+
+
+def hf_completed_run_dirs(
+    args: argparse.Namespace,
+    repo_files: list[str],
+    result_prefix: str,
+    model_name: str,
+    seed: int,
+) -> list[Path]:
+    run_prefix = f"{result_prefix}/seed_{seed}_run_"
+    summary_suffix = f"/{model_name}_test_metrics.csv"
+    summaries = sorted(
+        path
+        for path in repo_files
+        if path.startswith(run_prefix) and path.endswith(summary_suffix)
+    )
+    if not summaries:
+        raise FileNotFoundError(
+            f"No completed HF evaluation artifacts under {run_prefix}*"
+        )
+
+    run_dirs = []
+    for summary in summaries:
+        remote_run_dir = summary.rsplit("/", 1)[0]
+        thresholds = sorted(
+            path
+            for path in repo_files
+            if path.startswith(f"{remote_run_dir}/{model_name}_budget_")
+            and path.endswith("_selected_threshold.json")
+        )
+        if not thresholds:
+            raise FileNotFoundError(f"No threshold artifacts under {remote_run_dir}")
+        downloaded = download_hf_files(args, [summary, *thresholds])
+        run_dirs.append(downloaded[0].parent)
+    return run_dirs
+
+
+def hf_checkpoint_dir(
+    args: argparse.Namespace,
+    repo_files: list[str],
+    result_prefix: str,
+    model_name: str,
+    config: str,
+    seed: int,
+) -> tuple[Path, list[Path], str]:
+    """Download the newest run checkpoint, falling back to model_config."""
+    run_marker = f"{result_prefix}/seed_{seed}_run_"
+    completed_run_dirs = {
+        path.rsplit("/", 1)[0]
+        for path in repo_files
+        if path.startswith(run_marker)
+        and path.endswith(f"/{model_name}_test_metrics.csv")
+    }
+    run_checkpoint_paths = [
+        path
+        for path in repo_files
+        if path.startswith(run_marker)
+        and "/checkpoints/" in path
+        and Path(path).name in MODEL_FILES[model_name]
+        and path.split("/checkpoints/", 1)[0] in completed_run_dirs
+    ]
+    grouped: dict[str, list[str]] = {}
+    for path in run_checkpoint_paths:
+        grouped.setdefault(path.rsplit("/", 1)[0], []).append(path)
+
+    def run_number(remote_dir: str) -> int:
+        run_part = remote_dir.split(f"seed_{seed}_run_", 1)[1].split("/", 1)[0]
+        return int(run_part)
+
+    for remote_dir in sorted(grouped, key=run_number, reverse=True):
+        local_files = download_hf_files(args, sorted(grouped[remote_dir]))
+        local_dir = local_files[0].parent
+        try:
+            return local_dir, checkpoint_files(local_dir, model_name), remote_dir
+        except FileNotFoundError:
+            continue
+
+    model_config_prefix = f"model_config/openssl/{model_name}/{config}/seed_{seed}"
+    model_config_paths = [
+        path
+        for path in repo_files
+        if path.startswith(f"{model_config_prefix}/")
+        and Path(path).name in MODEL_FILES[model_name]
+    ]
+    if not model_config_paths:
+        raise FileNotFoundError(
+            f"No checkpoint files under {model_config_prefix} and no usable run checkpoint"
+        )
+    local_files = download_hf_files(args, sorted(model_config_paths))
+    local_dir = local_files[0].parent
+    return local_dir, checkpoint_files(local_dir, model_name), model_config_prefix
+
+
+def select_hf_seed_source(
+    args: argparse.Namespace,
+    repo_files: list[str],
+    model_name: str,
+    config: str,
+    seed: int,
+) -> tuple[str, Path, Path, list[Path], list[Path]]:
+    result_prefix = hf_result_prefix(repo_files, model_name, config, seed)
+    checkpoint_dir, checkpoints, checkpoint_source = hf_checkpoint_dir(
+        args, repo_files, result_prefix, model_name, config, seed
+    )
+    run_dirs = hf_completed_run_dirs(
+        args, repo_files, result_prefix, model_name, seed
+    )
+    print(
+        f"Selected seed {seed} Hugging Face checkpoint: "
+        f"{args.hf_repo_id}/{checkpoint_source}"
+    )
+    return (
+        f"hf://{args.hf_repo_id}/{checkpoint_source}",
+        Path(args.stage_dir) / result_prefix,
+        checkpoint_dir,
+        checkpoints,
+        run_dirs,
+    )
 
 
 def initialize_model(
@@ -430,18 +605,56 @@ def process_experiment(
     config: str,
     downloaded: dict[str, Path],
     revision_sha: str,
+    repo_files: list[str],
 ) -> None:
-    save_folder = find_save_folder(args.output_root, model_name, config, args.seeds)
-    source_experiment_root = find_experiment_root(save_folder, model_name, config)
-    experiment_root = args.result_root / model_name / config / source_experiment_root.name
+    seed_sources = {}
+    local_save_folders = None
+    for seed in args.seeds:
+        hf_error_message = "not checked"
+        try:
+            seed_sources[seed] = select_hf_seed_source(
+                args, repo_files, model_name, config, seed
+            )
+            continue
+        except FileNotFoundError as hf_error:
+            hf_error_message = str(hf_error)
+            print(f"HF checkpoint unavailable for seed {seed}: {hf_error_message}")
+        try:
+            if local_save_folders is None:
+                local_save_folders = find_save_folders(
+                    args.output_root, model_name, config
+                )
+            seed_sources[seed] = select_seed_source(
+                local_save_folders, model_name, config, seed
+            )
+        except FileNotFoundError as local_error:
+            raise FileNotFoundError(
+                f"No Hugging Face or local source for "
+                f"{model_name}/{config}/seed_{seed}. "
+                f"HF: {hf_error_message}; local: {local_error}"
+            ) from local_error
+    experiment_name = f"{model_name}_openssl_{config}_sampling"
+    experiment_root = args.result_root / model_name / config / experiment_name
     inputs = test_paths(model_name, downloaded)
-    overwrite_split_cache(save_folder, downloaded, args)
+    refreshed_folders = {
+        source[0]
+        for source in seed_sources.values()
+        if isinstance(source[0], Path)
+    }
+    for save_folder in sorted(refreshed_folders):
+        overwrite_split_cache(save_folder, downloaded, args)
     if not args.dry_run:
-        prepare_result_experiment(source_experiment_root, experiment_root)
+        for _, source_experiment_root, _, _, source_run_dirs in seed_sources.values():
+            for source_run_dir in source_run_dirs:
+                prepare_result_experiment(
+                    source_run_dir, experiment_root / source_run_dir.name
+                )
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "mode": "inference-only",
-        "source_experiment": str(source_experiment_root),
+        "source_experiments": sorted(
+            {str(source[1]) for source in seed_sources.values()}
+        ),
         "result_experiment": str(experiment_root),
         "dataset_repo": args.hf_repo_id,
         "dataset_revision": args.hf_revision,
@@ -452,22 +665,15 @@ def process_experiment(
     }
 
     for seed in args.seeds:
-        checkpoint_dir = (
-            save_folder
-            / "dg_cache"
-            / "save"
-            / "openssl"
-            / "models"
-            / f"{model_name}_seed_{seed}"
-            / "last_epoch"
+        save_folder, source_experiment_root, checkpoint_dir, checkpoints, source_run_dirs = (
+            seed_sources[seed]
         )
-        checkpoints = checkpoint_files(checkpoint_dir, model_name)
-        source_run_dirs = completed_run_dirs(source_experiment_root, model_name, seed)
-        verify_checkpoint_was_evaluated(checkpoints, source_run_dirs, model_name)
         print(f"Verified evaluated latest checkpoint: {checkpoint_dir}")
         manifest["checkpoints"].append(
             {
                 "seed": seed,
+                "source_output": str(save_folder),
+                "source_experiment": str(source_experiment_root),
                 "files": {path.name: sha256(path) for path in checkpoints},
                 "completed_runs": [path.name for path in source_run_dirs],
             }
@@ -510,14 +716,16 @@ def main() -> int:
         if not config.startswith("openssl_"):
             raise ValueError(f"Only OpenSSL configurations are allowed: {config}")
 
-    downloaded, revision_sha = download_fresh_test_dataset(args)
+    downloaded, revision_sha, repo_files = download_fresh_test_dataset(args)
     print(f"Pinned fresh dataset commit: {revision_sha}")
     failures = []
     for model_name in args.models:
         for config in args.configs:
             print(f"\n=== OpenSSL reinference: {model_name} / {config} ===")
             try:
-                process_experiment(args, model_name, config, downloaded, revision_sha)
+                process_experiment(
+                    args, model_name, config, downloaded, revision_sha, repo_files
+                )
             except Exception as exc:
                 failures.append((model_name, config, str(exc)))
                 print(f"FAILED {model_name}/{config}: {exc}", file=sys.stderr)
