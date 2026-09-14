@@ -4,7 +4,8 @@
 #   qsub -v HF_TOKEN scripts/reinfer_openssl_latest_sutd.pbs
 #
 # The default array has one task per (model, X) pair: 6 models x 4 X values.
-# Each task handles Y=1,2,3 and seeds 1..5 sequentially.
+# Each task handles Y=1,2,3 and seeds 1..5 sequentially. Up to four tasks use
+# one GPU each; PBS chooses any suitable node in v100q (no fixed host).
 #
 #PBS -N ossl_reinfer
 #PBS -q v100q
@@ -20,6 +21,7 @@ set -euo pipefail
 SERVER_ROOT="${SERVER_ROOT:-/scratch/congthanh_le/quan}"
 REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SERVER_ROOT/output}"
+RESULT_ROOT="${RESULT_ROOT:-$SERVER_ROOT/output/openssl_reinfer}"
 LOG_ROOT="${LOG_ROOT:-$SERVER_ROOT/vulguard_logs/openssl/reinfer_latest}"
 CONDA_SH="${CONDA_SH:-/app/anaconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-vulguard_lite}"
@@ -84,6 +86,7 @@ echo "Configs       : ${configs[*]}"
 echo "Seeds         : ${SEED_ARRAY[*]}"
 echo "Mode          : inference-only from verified last_epoch"
 echo "Output root   : $OUTPUT_ROOT"
+echo "Result root   : $RESULT_ROOT"
 
 # shellcheck disable=SC1090
 source "$CONDA_SH"
@@ -106,6 +109,7 @@ command=(
     python "$REPO_DIR/scripts/reinfer_openssl_latest.py"
     --repo-root "$REPO_DIR"
     --output-root "$OUTPUT_ROOT"
+    --result-root "$RESULT_ROOT"
     --stage-dir "$stage_dir"
     --models "$model"
     --configs "${configs[@]}"

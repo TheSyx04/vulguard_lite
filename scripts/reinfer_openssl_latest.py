@@ -47,7 +47,18 @@ TEST_PREFERENCES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        required=True,
+        help="Existing server output root containing checkpoints and completed runs",
+    )
+    parser.add_argument(
+        "--result-root",
+        type=Path,
+        required=True,
+        help="Separate destination root for reinference artifacts",
+    )
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--stage-dir", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=MODELS, required=True)
@@ -365,6 +376,15 @@ def update_run_artifacts(run_dir: Path, model_name: str, base_scores: pd.DataFra
     summary.to_csv(summary_path, index=False)
 
 
+def prepare_result_experiment(source_root: Path, result_root: Path) -> None:
+    """Copy completed artifacts so reinference never mutates original results."""
+    if source_root.resolve() == result_root.resolve():
+        raise ValueError("Reinference result directory must differ from the source experiment")
+    result_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_root, result_root, dirs_exist_ok=True)
+    print(f"Copied source artifacts without modifying them: {source_root} -> {result_root}")
+
+
 def rebuild_summary(experiment_root: Path, model_name: str) -> Path:
     run_files = sorted(experiment_root.glob(f"seed_*_run_*/{model_name}_test_metrics.csv"))
     if not run_files:
@@ -394,7 +414,7 @@ def upload_experiment(args: argparse.Namespace, model_name: str, experiment_root
     from vulguard_lite.utils.hf_upload import upload_folder_to_hf_dataset
 
     output_repo = args.hf_output_repo_id or args.hf_repo_id
-    remote_path = f"output/openssl/{model_name}/sampling/{experiment_root.name}"
+    remote_path = f"output/openssl_reinfer/{model_name}/sampling/{experiment_root.name}"
     upload_folder_to_hf_dataset(
         local_folder=str(experiment_root),
         repo_id=output_repo,
@@ -412,12 +432,17 @@ def process_experiment(
     revision_sha: str,
 ) -> None:
     save_folder = find_save_folder(args.output_root, model_name, config, args.seeds)
-    experiment_root = find_experiment_root(save_folder, model_name, config)
+    source_experiment_root = find_experiment_root(save_folder, model_name, config)
+    experiment_root = args.result_root / model_name / config / source_experiment_root.name
     inputs = test_paths(model_name, downloaded)
     overwrite_split_cache(save_folder, downloaded, args)
+    if not args.dry_run:
+        prepare_result_experiment(source_experiment_root, experiment_root)
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "mode": "inference-only",
+        "source_experiment": str(source_experiment_root),
+        "result_experiment": str(experiment_root),
         "dataset_repo": args.hf_repo_id,
         "dataset_revision": args.hf_revision,
         "dataset_commit": revision_sha,
@@ -437,14 +462,14 @@ def process_experiment(
             / "last_epoch"
         )
         checkpoints = checkpoint_files(checkpoint_dir, model_name)
-        run_dirs = completed_run_dirs(experiment_root, model_name, seed)
-        verify_checkpoint_was_evaluated(checkpoints, run_dirs, model_name)
+        source_run_dirs = completed_run_dirs(source_experiment_root, model_name, seed)
+        verify_checkpoint_was_evaluated(checkpoints, source_run_dirs, model_name)
         print(f"Verified evaluated latest checkpoint: {checkpoint_dir}")
         manifest["checkpoints"].append(
             {
                 "seed": seed,
                 "files": {path.name: sha256(path) for path in checkpoints},
-                "completed_runs": [path.name for path in run_dirs],
+                "completed_runs": [path.name for path in source_run_dirs],
             }
         )
         if args.dry_run:
@@ -459,8 +484,8 @@ def process_experiment(
             raise ValueError(
                 f"Inference returned {len(base_scores)} rows for {manifest['test_rows']} test commits"
             )
-        for run_dir in run_dirs:
-            update_run_artifacts(run_dir, model_name, base_scores)
+        for source_run_dir in source_run_dirs:
+            update_run_artifacts(experiment_root / source_run_dir.name, model_name, base_scores)
         del model
 
     if args.dry_run:
@@ -478,6 +503,7 @@ def process_experiment(
 def main() -> int:
     args = parse_args()
     args.output_root = args.output_root.resolve()
+    args.result_root = args.result_root.resolve()
     args.repo_root = args.repo_root.resolve()
     args.stage_dir = args.stage_dir.resolve()
     for config in args.configs:
