@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Remaining CPU configs: 22 array elements x 2 CPUs = 44 CPU slots; no GPUs.
-# At most eight elements run simultaneously.
-# PBS is pinned to aimc-gn3 because the CPU task fails on aimc-gn4.
+# Fixed-threshold inference only: 2 datasets x 3 CPU models.
+# Each element processes one config and five existing seed checkpoints.
 # Submit: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_cpu_sutd.pbs
 #
-#PBS -N ossl_reinf_c
+#PBS -N th05_infer_c
 #PBS -q v100q
 #PBS -l select=1:mem=10GB:ncpus=2:host=aimc-gn3
 #PBS -l walltime=48:00:00
 #PBS -P 20260203
-#PBS -J 0-21%8
+#PBS -J 0-95%8
 #PBS -j oe
-#PBS -o /scratch/congthanh_le/quan/vulguard_logs/overall/openssl_reinfer_cpu.log
+#PBS -o /scratch/congthanh_le/quan/vulguard_logs/overall/threshold_0.5_cpu.log
 
 set -euo pipefail
 
 SERVER_ROOT="${SERVER_ROOT:-/scratch/congthanh_le/quan}"
 REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 export SERVER_ROOT REPO_DIR
-export TASKS="${TASKS:-tlel:openssl_0_3;tlel:openssl_1_3;tlel:openssl_2_2;tlel:openssl_2_3;tlel:openssl_3_2;tlel:openssl_3_3;lr:openssl_2_1;lr:openssl_2_2;lr:openssl_2_3;lr:openssl_3_1;lr:openssl_3_2;lr:openssl_3_3;lapredict:openssl_0_2;lapredict:openssl_0_3;lapredict:openssl_1_2;lapredict:openssl_1_3;lapredict:openssl_2_1;lapredict:openssl_2_2;lapredict:openssl_2_3;lapredict:openssl_3_1;lapredict:openssl_3_2;lapredict:openssl_3_3}"
+export DATASETS="${DATASETS:-linux;openssl}"
+export MODELS="${MODELS:-tlel;lapredict;lr}"
 export EXECUTION_KIND="cpu"
 export CPU_THREADS="${CPU_THREADS:-2}"
 

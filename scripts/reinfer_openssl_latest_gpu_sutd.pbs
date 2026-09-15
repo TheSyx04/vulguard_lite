@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Remaining JITFine configs: 8 array elements x 4 CPUs = 32 CPU slots.
-# At most four elements (and therefore four GPUs) run simultaneously.
-# PBS selects any suitable node in v100q; no host is pinned.
+# Fixed-threshold inference only: 2 datasets x 3 GPU models.
+# Each element processes one config and five existing seed checkpoints.
 # Submit: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_gpu_sutd.pbs
 #
-#PBS -N ossl_reinf_g
+#PBS -N th05_infer_g
 #PBS -q v100q
 #PBS -l select=1:mem=10GB:ncpus=4:ngpus=1
 #PBS -l walltime=48:00:00
 #PBS -P 20260203
-#PBS -J 0-7%4
+#PBS -J 0-95%4
 #PBS -j oe
-#PBS -o /scratch/congthanh_le/quan/vulguard_logs/overall/openssl_reinfer_gpu.log
+#PBS -o /scratch/congthanh_le/quan/vulguard_logs/overall/threshold_0.5_gpu.log
 
 set -euo pipefail
 
 SERVER_ROOT="${SERVER_ROOT:-/scratch/congthanh_le/quan}"
 REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 export SERVER_ROOT REPO_DIR
-export TASKS="${TASKS:-jitfine:openssl_0_2;jitfine:openssl_0_3;jitfine:openssl_1_2;jitfine:openssl_1_3;jitfine:openssl_2_2;jitfine:openssl_2_3;jitfine:openssl_3_2;jitfine:openssl_3_3}"
+export DATASETS="${DATASETS:-linux;openssl}"
+export MODELS="${MODELS:-deepjit;simcom;jitfine}"
 export EXECUTION_KIND="gpu"
 export CPU_THREADS="${CPU_THREADS:-4}"
 
