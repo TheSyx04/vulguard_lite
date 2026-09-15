@@ -45,6 +45,10 @@ def arguments():
     p.add_argument("--hf-repo-id", default="TheSyx/vulguard_lite")
     p.add_argument("--hf-revision", default="main")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--skip-existing", action="store_true",
+        help="Skip a seed only when its scores, metrics, threshold and manifest all exist",
+    )
     return p.parse_args()
 
 
@@ -266,6 +270,23 @@ def summarize(args, dataset, model, config):
     )
 
 
+def result_is_complete(args, dataset, model, config, seed):
+    root = args.result_root / dataset / model / config / f"seed_{seed}"
+    required = (
+        root / f"{model}_test_scores.csv",
+        root / f"{model}_test_metrics.csv",
+        root / f"{model}_threshold.json",
+        root / "inference_manifest.json",
+    )
+    if not all(path.is_file() and path.stat().st_size > 0 for path in required):
+        return False
+    try:
+        manifest = json.loads(required[-1].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return manifest.get("mode") == "inference-only" and manifest.get("threshold") == THRESHOLD
+
+
 def main():
     args = arguments()
     for attr in ("repo_root", "checkpoint_root", "result_root", "stage_dir"):
@@ -286,6 +307,11 @@ def main():
                 for seed in args.seeds:
                     label = f"{dataset}/{name}/{config}/seed_{seed}"
                     try:
+                        if args.skip_existing and result_is_complete(
+                            args, dataset, name, config, seed
+                        ):
+                            print(f"SKIP complete result: {label}")
+                            continue
                         checkpoint, source = select_checkpoint(args, files, dataset, name, config, seed)
                         if args.dry_run:
                             print(f"DRY RUN inference-only: {label} <- {source}")

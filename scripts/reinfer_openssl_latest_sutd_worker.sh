@@ -15,6 +15,7 @@ SEEDS="${SEEDS:-1;2;3;4;5}"
 X_VALUES="${X_VALUES:-0;1;2;3}"
 Y_VALUES="${Y_VALUES:-0;1;2;3}"
 CPU_THREADS="${CPU_THREADS:-1}"
+TASK_STRIDE="${TASK_STRIDE:-1}"
 
 if [[ -z "${DATASETS:-}" || -z "${MODELS:-}" || -z "${EXECUTION_KIND:-}" ]]; then
     echo "DATASETS, MODELS and EXECUTION_KIND must be set by a PBS wrapper." >&2
@@ -94,7 +95,17 @@ command=(
     --device "$device"
     --hf-repo-id "$HF_REPO_ID"
     --hf-revision "$HF_REVISION"
+    --skip-existing
 )
 printf 'Command:'; printf ' %q' "${command[@]}"; printf '\n'
 "${command[@]}"
-echo "Completed       : $(date --iso-8601=seconds)"
+echo "Completed task  : $task_index at $(date --iso-8601=seconds)"
+
+# Keep the submitted PBS array small enough for per-user resource validation.
+# Each live worker consumes the remaining matrix in a deterministic stride.
+next_task=$((task_index + TASK_STRIDE))
+if ((next_task < task_count)); then
+    export PBS_ARRAY_INDEX="$next_task"
+    exec bash "$REPO_DIR/scripts/reinfer_openssl_latest_sutd_worker.sh"
+fi
+echo "Completed worker: $(date --iso-8601=seconds)"
