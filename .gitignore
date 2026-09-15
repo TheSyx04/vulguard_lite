@@ -53,5 +53,16 @@ scripts/*
 !scripts/reinfer_openssl_latest_sutd_worker.sh
 !scripts/reinfer_openssl_latest_gpu_sutd.pbs
 !scripts/reinfer_openssl_latest_cpu_sutd.pbs
+!scripts/reinfer_threshold_0_5.py
 
 !scripts/extract_line_vul_scores.py
+!scripts/qa_00_discover_linux_inputs.py
+!scripts/qa_01_build_linux_benchmark.py
+!scripts/qa_02_normalize_run1.py
+!scripts/qa_03_build_commit_profiles.py
+!scripts/qa_04_compare_data01.py
+!scripts/qa_05_select_win_loss_cases.py
+!scripts/qa_06_generate_blinded_packets.py
+!scripts/qa_07_ingest_annotations.py
+!scripts/qa_08_generate_report_assets.py
+!scripts/qa_09_final_validate.py
