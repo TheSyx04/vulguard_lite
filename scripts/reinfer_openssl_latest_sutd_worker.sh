@@ -19,8 +19,8 @@ SEEDS="${SEEDS:-1;2;3;4;5}"
 UPLOAD_RESULTS="${UPLOAD_RESULTS:-True}"
 CPU_THREADS="${CPU_THREADS:-1}"
 
-if [[ -z "${MODELS:-}" || -z "${EXECUTION_KIND:-}" ]]; then
-    echo "MODELS and EXECUTION_KIND must be set by a CPU/GPU PBS wrapper." >&2
+if [[ -z "${TASKS:-}" && -z "${MODELS:-}" ]] || [[ -z "${EXECUTION_KIND:-}" ]]; then
+    echo "TASKS (or MODELS) and EXECUTION_KIND must be set by a PBS wrapper." >&2
     exit 2
 fi
 if [[ -z "${HF_TOKEN:-}" ]]; then
@@ -36,21 +36,42 @@ if [[ ! -f "$CONDA_SH" ]]; then
     exit 2
 fi
 
-IFS=';' read -r -a MODEL_ARRAY <<< "$MODELS"
-IFS=';' read -r -a X_ARRAY <<< "$X_VALUES"
-IFS=';' read -r -a Y_ARRAY <<< "$Y_VALUES"
 IFS=';' read -r -a SEED_ARRAY <<< "$SEEDS"
 
 task_index="${PBS_ARRAY_INDEX:-${PBS_ARRAYID:-0}}"
-task_count=$((${#MODEL_ARRAY[@]} * ${#X_ARRAY[@]}))
+if [[ -n "${TASKS:-}" ]]; then
+    IFS=';' read -r -a TASK_ARRAY <<< "$TASKS"
+    task_count=${#TASK_ARRAY[@]}
+else
+    IFS=';' read -r -a MODEL_ARRAY <<< "$MODELS"
+    IFS=';' read -r -a X_ARRAY <<< "$X_VALUES"
+    IFS=';' read -r -a Y_ARRAY <<< "$Y_VALUES"
+    task_count=$((${#MODEL_ARRAY[@]} * ${#X_ARRAY[@]}))
+fi
 if ((task_index < 0 || task_index >= task_count)); then
     echo "Array index $task_index is outside the configured matrix 0-$((task_count - 1))"
     exit 0
 fi
-model_index=$((task_index / ${#X_ARRAY[@]}))
-x_index=$((task_index % ${#X_ARRAY[@]}))
-model="${MODEL_ARRAY[$model_index]}"
-x="${X_ARRAY[$x_index]}"
+
+if [[ -n "${TASKS:-}" ]]; then
+    task="${TASK_ARRAY[$task_index]}"
+    model="${task%%:*}"
+    config="${task#*:}"
+    if [[ "$model" == "$task" || ! "$config" =~ ^openssl_[0-3]_[1-3]$ ]]; then
+        echo "Invalid TASKS entry: $task (expected model:openssl_X_Y)" >&2
+        exit 2
+    fi
+    configs=("$config")
+else
+    model_index=$((task_index / ${#X_ARRAY[@]}))
+    x_index=$((task_index % ${#X_ARRAY[@]}))
+    model="${MODEL_ARRAY[$model_index]}"
+    x="${X_ARRAY[$x_index]}"
+    configs=()
+    for y in "${Y_ARRAY[@]}"; do
+        configs+=("openssl_${x}_${y}")
+    done
+fi
 
 case "$EXECUTION_KIND:$model" in
     cpu:tlel|cpu:lapredict|cpu:lr) device="cpu" ;;
@@ -58,20 +79,16 @@ case "$EXECUTION_KIND:$model" in
     *) echo "Model $model is invalid for the $EXECUTION_KIND array" >&2; exit 2 ;;
 esac
 
-configs=()
-for y in "${Y_ARRAY[@]}"; do
-    configs+=("openssl_${x}_${y}")
-done
-
 mkdir -p "$LOG_ROOT"
-log_file="$LOG_ROOT/${EXECUTION_KIND}_${model}_x${x}.log"
+config_label="${configs[0]}"
+log_file="$LOG_ROOT/${EXECUTION_KIND}_${model}_${config_label}.log"
 exec > >(tee -a "$log_file") 2>&1
 
 echo "Started       : $(date --iso-8601=seconds)"
 echo "Host          : $(hostname)"
 echo "Execution     : $EXECUTION_KIND"
 echo "Array task    : $task_index / $((task_count - 1))"
-echo "Model / X     : $model / $x"
+echo "Model         : $model"
 echo "Configs       : ${configs[*]}"
 echo "Seeds         : ${SEED_ARRAY[*]}"
 echo "CPU threads   : $CPU_THREADS"
