@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +45,8 @@ def arguments():
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--hf-repo-id", default="TheSyx/vulguard_lite")
     p.add_argument("--hf-revision", default="main")
+    p.add_argument("--hf-output-repo-id")
+    p.add_argument("--upload-results", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
         "--skip-existing", action="store_true",
@@ -287,6 +290,42 @@ def result_is_complete(args, dataset, model, config, seed):
     return manifest.get("mode") == "inference-only" and manifest.get("threshold") == THRESHOLD
 
 
+def upload_config(args, dataset, model, config):
+    """Upload one completed/partially completed config tree with retries."""
+    from vulguard_lite.utils.hf_upload import upload_folder_to_hf_dataset
+
+    local = args.result_root / dataset / model / config
+    complete_seeds = [
+        seed for seed in args.seeds
+        if result_is_complete(args, dataset, model, config, seed)
+    ]
+    if not complete_seeds:
+        print(f"No complete results to upload: {dataset}/{model}/{config}")
+        return
+    output_repo = args.hf_output_repo_id or args.hf_repo_id
+    remote = f"output/threshold_0.5/{dataset}/{model}/{config}"
+    message = (
+        f"Upload threshold 0.5 inference for {dataset}/{model}/{config} "
+        f"({len(complete_seeds)}/{len(args.seeds)} seeds)"
+    )
+    for attempt in range(1, 6):
+        try:
+            upload_folder_to_hf_dataset(
+                local_folder=str(local), repo_id=output_repo,
+                path_in_repo=remote, commit_message=message,
+            )
+            print(f"Uploaded to Hugging Face: {output_repo}/{remote}")
+            return
+        except Exception as exc:
+            if attempt == 5:
+                raise RuntimeError(
+                    f"Hugging Face upload failed after {attempt} attempts: {exc}"
+                ) from exc
+            delay = 2 ** attempt
+            print(f"HF upload attempt {attempt}/5 failed; retry in {delay}s: {exc}")
+            time.sleep(delay)
+
+
 def main():
     args = arguments()
     for attr in ("repo_root", "checkpoint_root", "result_root", "stage_dir"):
@@ -328,6 +367,15 @@ def main():
                         print(f"FAILED {label}: {exc}", file=sys.stderr)
                 if not args.dry_run:
                     summarize(args, dataset, name, config)
+                    if args.upload_results:
+                        try:
+                            upload_config(args, dataset, name, config)
+                        except Exception as exc:
+                            failures.append((dataset, name, config, f"upload: {exc}"))
+                            print(
+                                f"FAILED upload {dataset}/{name}/{config}: {exc}",
+                                file=sys.stderr,
+                            )
     if failures:
         print("Failures:", file=sys.stderr)
         for dataset, name, config, error in failures:

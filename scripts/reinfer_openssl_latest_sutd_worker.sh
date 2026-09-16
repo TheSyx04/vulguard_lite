@@ -11,6 +11,8 @@ CONDA_SH="${CONDA_SH:-/app/anaconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-vulguard_lite}"
 HF_REPO_ID="${HF_REPO_ID:-TheSyx/vulguard_lite}"
 HF_REVISION="${HF_REVISION:-main}"
+HF_OUTPUT_REPO_ID="${HF_OUTPUT_REPO_ID:-$HF_REPO_ID}"
+UPLOAD_RESULTS="${UPLOAD_RESULTS:-True}"
 SEEDS="${SEEDS:-1;2;3;4;5}"
 X_VALUES="${X_VALUES:-0;1;2;3}"
 Y_VALUES="${Y_VALUES:-0;1;2;3}"
@@ -68,10 +70,15 @@ echo "Mode            : inference-only (training is never called)"
 echo "Threshold       : 0.5"
 echo "Checkpoint order: local server, then Hugging Face fallback"
 echo "Result root     : $RESULT_ROOT"
+echo "HF output       : $HF_OUTPUT_REPO_ID/output/threshold_0.5"
 
-# shellcheck disable=SC1090
-source "$CONDA_SH"
-conda activate "$CONDA_ENV"
+# Recursive stride workers retain the activated environment. Avoid sourcing
+# conda again for every task (the shared filesystem can transiently fail).
+if [[ "${CONDA_DEFAULT_ENV:-}" != "$CONDA_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONDA_SH"
+    conda activate "$CONDA_ENV"
+fi
 project_parent="$(dirname "$REPO_DIR")"
 export PYTHONPATH="$project_parent${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS="$CPU_THREADS"
@@ -95,8 +102,14 @@ command=(
     --device "$device"
     --hf-repo-id "$HF_REPO_ID"
     --hf-revision "$HF_REVISION"
+    --hf-output-repo-id "$HF_OUTPUT_REPO_ID"
     --skip-existing
 )
+case "${UPLOAD_RESULTS,,}" in
+    true|1|yes) command+=(--upload-results) ;;
+    false|0|no) ;;
+    *) echo "UPLOAD_RESULTS must be True or False, got: $UPLOAD_RESULTS" >&2; exit 2 ;;
+esac
 printf 'Command:'; printf ' %q' "${command[@]}"; printf '\n'
 "${command[@]}"
 echo "Completed task  : $task_index at $(date --iso-8601=seconds)"
