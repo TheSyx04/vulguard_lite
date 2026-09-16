@@ -42,26 +42,9 @@ datasets/
 scripts/
 !scripts/
 scripts/*
-!scripts/run_experiments_single_gpu.sh
-!scripts/run_line_ranking_sutd.pbs
-!scripts/submit_line_ranking_sutd.sh
-!scripts/upload_line_ranking_results.py
-!scripts/aggregate_line_ranking_results.py
-!scripts/rerank_jitfine_hunk_chunks.py
-!scripts/build_line_ranking_reports.py
 
-!scripts/extract_line_vul_scores.py
-scripts/qa_00_discover_linux_inputs.py
-scripts/qa_01_build_linux_benchmark.py
-scripts/qa_02_normalize_run1.py
-scripts/qa_03_build_commit_profiles.py
-scripts/qa_04_compare_data01.py
-scripts/qa_05_select_win_loss_cases.py
-scripts/qa_06_generate_blinded_packets.py
-scripts/qa_07_ingest_annotations.py
-scripts/qa_08_generate_report_assets.py
-scripts/qa_09_final_validate.py
-scripts/qa_10_openssl_cross_project.py
 
 artifacts/
+
+
 
