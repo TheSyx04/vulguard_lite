@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fixed-threshold inference only: 2 datasets x 3 GPU models.
-# Exactly two workers/GPUs consume the 96-task matrix with stride 2.
+# Fixed-threshold inference only: JITFine on Linux.
+# Exactly two workers/GPUs consume the 16-task matrix with stride 2.
 # Submit: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_gpu_sutd.pbs
 #
 #PBS -N th05_infer_g
@@ -17,8 +17,8 @@ set -euo pipefail
 SERVER_ROOT="${SERVER_ROOT:-/scratch/congthanh_le/quan}"
 REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 export SERVER_ROOT REPO_DIR
-export DATASETS="${DATASETS:-linux;openssl}"
-export MODELS="${MODELS:-deepjit;simcom;jitfine}"
+export DATASETS="${DATASETS:-linux}"
+export MODELS="${MODELS:-jitfine}"
 export EXECUTION_KIND="gpu"
 export CPU_THREADS="${CPU_THREADS:-4}"
 export TASK_STRIDE="${TASK_STRIDE:-2}"
