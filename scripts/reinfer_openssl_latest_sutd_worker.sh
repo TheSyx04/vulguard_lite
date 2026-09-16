@@ -13,6 +13,7 @@ HF_REPO_ID="${HF_REPO_ID:-TheSyx/vulguard_lite}"
 HF_REVISION="${HF_REVISION:-main}"
 HF_OUTPUT_REPO_ID="${HF_OUTPUT_REPO_ID:-$HF_REPO_ID}"
 UPLOAD_RESULTS="${UPLOAD_RESULTS:-True}"
+TRAIN_MISSING_LINUX_CPU="${TRAIN_MISSING_LINUX_CPU:-True}"
 SEEDS="${SEEDS:-1;2;3;4;5}"
 X_VALUES="${X_VALUES:-0;1;2;3}"
 Y_VALUES="${Y_VALUES:-0;1;2;3}"
@@ -110,6 +111,13 @@ case "${UPLOAD_RESULTS,,}" in
     false|0|no) ;;
     *) echo "UPLOAD_RESULTS must be True or False, got: $UPLOAD_RESULTS" >&2; exit 2 ;;
 esac
+if [[ "$dataset" == "linux" && "$EXECUTION_KIND" == "cpu" ]]; then
+    case "${TRAIN_MISSING_LINUX_CPU,,}" in
+        true|1|yes) command+=(--train-missing-linux-cpu) ;;
+        false|0|no) ;;
+        *) echo "TRAIN_MISSING_LINUX_CPU must be True or False" >&2; exit 2 ;;
+    esac
+fi
 printf 'Command:'; printf ' %q' "${command[@]}"; printf '\n'
 "${command[@]}"
 echo "Completed task  : $task_index at $(date --iso-8601=seconds)"

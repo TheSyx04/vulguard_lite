@@ -47,6 +47,11 @@ def arguments():
     p.add_argument("--hf-revision", default="main")
     p.add_argument("--hf-output-repo-id")
     p.add_argument("--upload-results", action="store_true")
+    p.add_argument(
+        "--train-missing-linux-cpu", action="store_true",
+        help=("Train a missing checkpoint only for Linux tlel/lapredict/lr; "
+              "all other missing checkpoints remain fatal"),
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
         "--skip-existing", action="store_true",
@@ -200,9 +205,55 @@ def select_checkpoint(args, files, dataset, model, config, seed):
             source = f"hf://{args.hf_repo_id}/{remote_dir}"
             print(f"Checkpoint Hugging Face fallback: {source}")
             return directory, source
+    if args.train_missing_linux_cpu and dataset == "linux" and model in {
+        "tlel", "lapredict", "lr",
+    }:
+        if args.dry_run:
+            expected = (
+                args.checkpoint_root / "linux" / model / config / "dg_cache" / "save"
+                / "linux" / "models" / f"{model}_seed_{seed}" / "last_epoch"
+            )
+            print(f"DRY RUN would train missing Linux CPU checkpoint: {expected}")
+            return expected, f"would-train://linux/{model}/{config}/seed_{seed}"
+        directory = train_linux_cpu_checkpoint(args, model, config, seed)
+        return directory, f"trained-local://linux/{model}/{config}/seed_{seed}"
     raise FileNotFoundError(
         f"No complete local or HF checkpoint for {dataset}/{model}/{config}/seed_{seed}"
     )
+
+
+def train_linux_cpu_checkpoint(args, model, config, seed):
+    """Train exactly one missing Linux CPU checkpoint and return last_epoch."""
+    from argparse import Namespace
+    from vulguard_lite.training import training
+    from vulguard_lite.utils.reproducibility import seed_everything
+
+    if model not in {"tlel", "lapredict", "lr"} or not config.startswith("linux_"):
+        raise ValueError(f"Training is forbidden outside Linux CPU models: {model}/{config}")
+    save_folder = args.checkpoint_root / "linux" / model / config
+    model_output = (
+        save_folder / "dg_cache" / "save" / "linux" / "models" / f"{model}_seed_{seed}"
+    )
+    print(
+        f"No local/HF checkpoint; training authorized Linux CPU model: "
+        f"{model}/{config}/seed_{seed}"
+    )
+    seed_everything(42)
+    params = Namespace(
+        repo_name="linux", repo_language="C", model=model, device="cpu",
+        dg_save_folder=str(save_folder), hf_repo_id=args.hf_repo_id,
+        hf_revision=args.hf_revision, hf_split_path=f"dataset/linux/{config}",
+        train_set=None, val_set=None, dictionary=None, hyperparameters=None,
+        model_path=None, resume_from_checkpoint=False, checkpoint_dir=None,
+        model_output_dir=str(model_output), sampling=True, sampling_seed=seed,
+        sampling_run_id=1, seed=42, epochs=30,
+    )
+    result = training(params)
+    directory = Path(result["last_model_dir"])
+    if not complete(directory, model):
+        raise RuntimeError(f"Training did not produce a complete checkpoint: {directory}")
+    print(f"Trained Linux CPU checkpoint: {directory}")
+    return directory
 
 
 def load_model(args, name, checkpoint, dictionary):
