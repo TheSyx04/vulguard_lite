@@ -46,5 +46,13 @@ scripts/*
 
 artifacts/
 
+# Generated qualitative-localization downloads, normalized tables, and reports
+artifacts/qualitative_localization/
+line_ranking_reports/
+line_ranking_results.xlsx
+line_ranking_csv/
+jitfine_hunk_chunk_results/
+jitfine_hunk_chunk_results.csv
+
 qualitative_analysis/
 
