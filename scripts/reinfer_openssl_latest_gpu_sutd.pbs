@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fixed-threshold inference only: JITFine on Linux.
-# Exactly two workers/GPUs consume the 16-task matrix with stride 2.
+# Configs 0_0, 0_1 and 0_2 are already complete; two workers continue the
+# remaining 13 JITFine configs with stride 2.
 # Submit: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_gpu_sutd.pbs
 #
 #PBS -N th05_infer_g
@@ -19,6 +20,7 @@ REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 export SERVER_ROOT REPO_DIR
 export DATASETS="${DATASETS:-linux}"
 export MODELS="${MODELS:-jitfine}"
+export CONFIGS="${CONFIGS:-0_3;1_0;1_1;1_2;1_3;2_0;2_1;2_2;2_3;3_0;3_1;3_2;3_3}"
 export EXECUTION_KIND="gpu"
 export CPU_THREADS="${CPU_THREADS:-4}"
 export TASK_STRIDE="${TASK_STRIDE:-2}"

@@ -17,6 +17,7 @@ TRAIN_MISSING_LINUX_CPU="${TRAIN_MISSING_LINUX_CPU:-True}"
 SEEDS="${SEEDS:-1;2;3;4;5}"
 X_VALUES="${X_VALUES:-0;1;2;3}"
 Y_VALUES="${Y_VALUES:-0;1;2;3}"
+CONFIGS="${CONFIGS:-}"
 CPU_THREADS="${CPU_THREADS:-1}"
 TASK_STRIDE="${TASK_STRIDE:-1}"
 
@@ -39,7 +40,13 @@ IFS=';' read -r -a SEED_ARRAY <<< "$SEEDS"
 IFS=';' read -r -a X_ARRAY <<< "$X_VALUES"
 IFS=';' read -r -a Y_ARRAY <<< "$Y_VALUES"
 task_index="${PBS_ARRAY_INDEX:-${PBS_ARRAYID:-0}}"
-config_count=$((${#X_ARRAY[@]} * ${#Y_ARRAY[@]}))
+if [[ -n "$CONFIGS" ]]; then
+    IFS=';' read -r -a CONFIG_ARRAY <<< "$CONFIGS"
+    config_count=${#CONFIG_ARRAY[@]}
+else
+    CONFIG_ARRAY=()
+    config_count=$((${#X_ARRAY[@]} * ${#Y_ARRAY[@]}))
+fi
 task_count=$((${#DATASET_ARRAY[@]} * ${#MODEL_ARRAY[@]} * config_count))
 if ((task_index < 0 || task_index >= task_count)); then
     echo "Array index $task_index is outside 0-$((task_count - 1))" >&2
@@ -50,11 +57,20 @@ dataset_index=$((task_index / (${#MODEL_ARRAY[@]} * config_count)))
 remainder=$((task_index % (${#MODEL_ARRAY[@]} * config_count)))
 model_index=$((remainder / config_count))
 config_index=$((remainder % config_count))
-x_index=$((config_index / ${#Y_ARRAY[@]}))
-y_index=$((config_index % ${#Y_ARRAY[@]}))
 dataset="${DATASET_ARRAY[$dataset_index]}"
 model="${MODEL_ARRAY[$model_index]}"
-config="${dataset}_${X_ARRAY[$x_index]}_${Y_ARRAY[$y_index]}"
+if [[ ${#CONFIG_ARRAY[@]} -gt 0 ]]; then
+    config_token="${CONFIG_ARRAY[$config_index]}"
+    if [[ "$config_token" == "${dataset}_"* ]]; then
+        config="$config_token"
+    else
+        config="${dataset}_${config_token}"
+    fi
+else
+    x_index=$((config_index / ${#Y_ARRAY[@]}))
+    y_index=$((config_index % ${#Y_ARRAY[@]}))
+    config="${dataset}_${X_ARRAY[$x_index]}_${Y_ARRAY[$y_index]}"
+fi
 case "$dataset" in linux|openssl) ;; *) echo "Invalid dataset: $dataset" >&2; exit 2 ;; esac
 case "$EXECUTION_KIND:$model" in
     cpu:tlel|cpu:lapredict|cpu:lr) device="cpu" ;;
