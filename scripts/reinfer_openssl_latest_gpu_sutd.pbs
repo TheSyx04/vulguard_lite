@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Fixed-threshold inference only: JITFine on Linux.
-# Configs 0_0, 0_1 and 0_2 are already complete; two workers continue the
-# remaining 13 JITFine configs with stride 2.
+# Fixed-threshold inference only: JITFine on OpenSSL.
+# OpenSSL has no 0_0, 1_0, 2_0 or 3_0 split. Two workers consume the 12 valid
+# configs (X in 0..3, Y in 1..3) with stride 2.
 # Submit: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_gpu_sutd.pbs
 #
 #PBS -N th05_infer_g
@@ -18,9 +18,9 @@ set -euo pipefail
 SERVER_ROOT="${SERVER_ROOT:-/scratch/congthanh_le/quan}"
 REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 export SERVER_ROOT REPO_DIR
-export DATASETS="${DATASETS:-linux}"
+export DATASETS="${DATASETS:-openssl}"
 export MODELS="${MODELS:-jitfine}"
-export CONFIGS="${CONFIGS:-2_0;2_2;3_0;3_2}"
+export CONFIGS="${CONFIGS:-0_1;0_2;0_3;1_1;1_2;1_3;2_1;2_2;2_3;3_1;3_2;3_3}"
 export EXECUTION_KIND="gpu"
 export CPU_THREADS="${CPU_THREADS:-4}"
 export TASK_STRIDE="${TASK_STRIDE:-2}"
