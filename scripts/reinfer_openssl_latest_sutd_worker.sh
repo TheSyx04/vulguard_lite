@@ -21,8 +21,12 @@ CONFIGS="${CONFIGS:-}"
 CPU_THREADS="${CPU_THREADS:-1}"
 TASK_STRIDE="${TASK_STRIDE:-1}"
 
-if [[ -z "${DATASETS:-}" || -z "${MODELS:-}" || -z "${EXECUTION_KIND:-}" ]]; then
-    echo "DATASETS, MODELS and EXECUTION_KIND must be set by a PBS wrapper." >&2
+if [[ -z "${EXECUTION_KIND:-}" ]]; then
+    echo "EXECUTION_KIND must be set by a PBS wrapper." >&2
+    exit 2
+fi
+if [[ -z "${TASKS:-}" && ( -z "${DATASETS:-}" || -z "${MODELS:-}" ) ]]; then
+    echo "Set TASKS, or set both DATASETS and MODELS." >&2
     exit 2
 fi
 if [[ ! -f "$REPO_DIR/scripts/reinfer_threshold_0_5.py" ]]; then
@@ -34,44 +38,61 @@ if [[ ! -f "$CONDA_SH" ]]; then
     exit 2
 fi
 
-IFS=';' read -r -a DATASET_ARRAY <<< "$DATASETS"
-IFS=';' read -r -a MODEL_ARRAY <<< "$MODELS"
 IFS=';' read -r -a SEED_ARRAY <<< "$SEEDS"
 IFS=';' read -r -a X_ARRAY <<< "$X_VALUES"
 IFS=';' read -r -a Y_ARRAY <<< "$Y_VALUES"
 task_index="${PBS_ARRAY_INDEX:-${PBS_ARRAYID:-0}}"
-if [[ -n "$CONFIGS" ]]; then
-    IFS=';' read -r -a CONFIG_ARRAY <<< "$CONFIGS"
-    config_count=${#CONFIG_ARRAY[@]}
+if [[ -n "${TASKS:-}" ]]; then
+    IFS=';' read -r -a TASK_ARRAY <<< "$TASKS"
+    task_count=${#TASK_ARRAY[@]}
 else
-    CONFIG_ARRAY=()
-    config_count=$((${#X_ARRAY[@]} * ${#Y_ARRAY[@]}))
+    IFS=';' read -r -a DATASET_ARRAY <<< "$DATASETS"
+    IFS=';' read -r -a MODEL_ARRAY <<< "$MODELS"
+    if [[ -n "$CONFIGS" ]]; then
+        IFS=';' read -r -a CONFIG_ARRAY <<< "$CONFIGS"
+        config_count=${#CONFIG_ARRAY[@]}
+    else
+        CONFIG_ARRAY=()
+        config_count=$((${#X_ARRAY[@]} * ${#Y_ARRAY[@]}))
+    fi
+    task_count=$((${#DATASET_ARRAY[@]} * ${#MODEL_ARRAY[@]} * config_count))
 fi
-task_count=$((${#DATASET_ARRAY[@]} * ${#MODEL_ARRAY[@]} * config_count))
 if ((task_index < 0 || task_index >= task_count)); then
     echo "Array index $task_index is outside 0-$((task_count - 1))" >&2
     exit 2
 fi
 
-dataset_index=$((task_index / (${#MODEL_ARRAY[@]} * config_count)))
-remainder=$((task_index % (${#MODEL_ARRAY[@]} * config_count)))
-model_index=$((remainder / config_count))
-config_index=$((remainder % config_count))
-dataset="${DATASET_ARRAY[$dataset_index]}"
-model="${MODEL_ARRAY[$model_index]}"
-if [[ ${#CONFIG_ARRAY[@]} -gt 0 ]]; then
-    config_token="${CONFIG_ARRAY[$config_index]}"
-    if [[ "$config_token" == "${dataset}_"* ]]; then
-        config="$config_token"
-    else
-        config="${dataset}_${config_token}"
+if [[ -n "${TASKS:-}" ]]; then
+    IFS=':' read -r dataset model config <<< "${TASK_ARRAY[$task_index]}"
+    if [[ -z "$dataset" || -z "$model" || -z "$config" ]]; then
+        echo "Invalid TASKS entry: ${TASK_ARRAY[$task_index]}" >&2
+        exit 2
     fi
 else
-    x_index=$((config_index / ${#Y_ARRAY[@]}))
-    y_index=$((config_index % ${#Y_ARRAY[@]}))
-    config="${dataset}_${X_ARRAY[$x_index]}_${Y_ARRAY[$y_index]}"
+    dataset_index=$((task_index / (${#MODEL_ARRAY[@]} * config_count)))
+    remainder=$((task_index % (${#MODEL_ARRAY[@]} * config_count)))
+    model_index=$((remainder / config_count))
+    config_index=$((remainder % config_count))
+    dataset="${DATASET_ARRAY[$dataset_index]}"
+    model="${MODEL_ARRAY[$model_index]}"
+    if [[ ${#CONFIG_ARRAY[@]} -gt 0 ]]; then
+        config_token="${CONFIG_ARRAY[$config_index]}"
+        if [[ "$config_token" == "${dataset}_"* ]]; then
+            config="$config_token"
+        else
+            config="${dataset}_${config_token}"
+        fi
+    else
+        x_index=$((config_index / ${#Y_ARRAY[@]}))
+        y_index=$((config_index % ${#Y_ARRAY[@]}))
+        config="${dataset}_${X_ARRAY[$x_index]}_${Y_ARRAY[$y_index]}"
+    fi
 fi
 case "$dataset" in linux|openssl) ;; *) echo "Invalid dataset: $dataset" >&2; exit 2 ;; esac
+if [[ ! "$config" =~ ^${dataset}_[0-3]_[0-3]$ ]]; then
+    echo "Invalid config for $dataset: $config" >&2
+    exit 2
+fi
 case "$EXECUTION_KIND:$model" in
     cpu:tlel|cpu:lapredict|cpu:lr) device="cpu" ;;
     gpu:deepjit|gpu:simcom|gpu:jitfine) device="cuda:0" ;;

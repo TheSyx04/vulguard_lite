@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Fixed-threshold inference only: JITFine on OpenSSL.
-# OpenSSL has no 0_0, 1_0, 2_0 or 3_0 split. Two workers consume the 12 valid
-# configs (X in 0..3, Y in 1..3) with stride 2.
+# Fixed-threshold OpenSSL inference: DeepJIT and SimCom run all 12 valid splits;
+# JITFine runs only 1_1, 1_3, 2_2, 3_1 and 3_3. Two GPU workers use stride 2.
 # Submit: qsub -v HF_TOKEN scripts/reinfer_openssl_latest_gpu_sutd.pbs
 #
 #PBS -N th05_infer_g
@@ -18,9 +17,7 @@ set -euo pipefail
 SERVER_ROOT="${SERVER_ROOT:-/scratch/congthanh_le/quan}"
 REPO_DIR="${REPO_DIR:-$SERVER_ROOT/vulguard_lite}"
 export SERVER_ROOT REPO_DIR
-export DATASETS="${DATASETS:-openssl}"
-export MODELS="${MODELS:-jitfine}"
-export CONFIGS="${CONFIGS:-0_1;0_2;0_3;1_1;1_2;1_3;2_1;2_2;2_3;3_1;3_2;3_3}"
+export TASKS="${TASKS:-openssl:deepjit:openssl_0_1;openssl:deepjit:openssl_0_2;openssl:deepjit:openssl_0_3;openssl:deepjit:openssl_1_1;openssl:deepjit:openssl_1_2;openssl:deepjit:openssl_1_3;openssl:deepjit:openssl_2_1;openssl:deepjit:openssl_2_2;openssl:deepjit:openssl_2_3;openssl:deepjit:openssl_3_1;openssl:deepjit:openssl_3_2;openssl:deepjit:openssl_3_3;openssl:simcom:openssl_0_1;openssl:simcom:openssl_0_2;openssl:simcom:openssl_0_3;openssl:simcom:openssl_1_1;openssl:simcom:openssl_1_2;openssl:simcom:openssl_1_3;openssl:simcom:openssl_2_1;openssl:simcom:openssl_2_2;openssl:simcom:openssl_2_3;openssl:simcom:openssl_3_1;openssl:simcom:openssl_3_2;openssl:simcom:openssl_3_3;openssl:jitfine:openssl_1_1;openssl:jitfine:openssl_1_3;openssl:jitfine:openssl_2_2;openssl:jitfine:openssl_3_1;openssl:jitfine:openssl_3_3}"
 export EXECUTION_KIND="gpu"
 export CPU_THREADS="${CPU_THREADS:-4}"
 export TASK_STRIDE="${TASK_STRIDE:-2}"
