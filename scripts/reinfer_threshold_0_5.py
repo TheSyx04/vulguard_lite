@@ -259,7 +259,9 @@ def train_linux_cpu_checkpoint(args, model, config, seed):
 def load_model(args, name, checkpoint, dictionary):
     from vulguard_lite.models.init_model import init_model
     hyperparameters = None
-    if name not in {"lapredict", "lr"}:
+    # The three CPU models are sklearn/custom-pickle models and do not have a
+    # hyperparameters.json file. Only neural models consume this argument.
+    if name in {"deepjit", "simcom", "jitfine"}:
         hyperparameters = args.repo_root / "models" / name / "hyperparameters.json"
         if not hyperparameters.is_file():
             raise FileNotFoundError(hyperparameters)
